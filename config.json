@@ -1,21 +1,21 @@
 {
-    "symbolsToWatch": ["SOLUSDT", "ADAUSDT", "XRPUSDT", "MATICUSDT", "DOTUSDT"],
-    "quoteAsset": "USDT",
-    "interval": "1m",
-
-    "rsiPeriod": 14,
-    "emaPeriod": 200,
-    "macd": {
-        "fastPeriod": 12,
-        "slowPeriod": 26,
-        "signalPeriod": 9
-    },
-    "volumeSmaPeriod": 20,
-
-    "rsiOversold": 30,
-    "rsiOverbought": 75, 
-
-    "tradeAmountPercent": 2, 
-    "stopLossPercent": 1.5,
-    "takeProfitPercent": 3.0
+  "symbolsToWatch": ["SOLUSDT", "ADAUSDT"],
+  "interval": "1m",
+  "rsiPeriod": 14,
+  "emaPeriod": 20,
+  "macd": {
+    "fastPeriod": 12,
+    "slowPeriod": 26,
+    "signalPeriod": 9
+  },
+  "volumeSmaPeriod": 20,
+  "rsiOversold": 30,
+  "rsiOverbought": 70,
+  "stopLossPercent": 0.5,     // Stop Loss de 0.5% (curto)
+  "takeProfitPercent": 0.8,   // Take Profit de 0.8% (curto)
+  "capitalAllocationPercent": 5, // Novo: % do capital total a ser usado por trade (ex: 5% da margem disponível)
+  "quoteAsset": "USDT",
+  "minMarginBalanceTransfer": 50, // Novo: Saldo mínimo em USDT na carteira Spot para iniciar a transferência para margem
+  "transferAmountPercent": 20,    // Novo: % do saldo Spot a ser transferido para Margem se abaixo do minMarginBalance
+  "targetMarginLevel": 1.5      // Novo: Nível de margem alvo para monitoramento de risco (Binance exige >1.1 para liquidação)
 }

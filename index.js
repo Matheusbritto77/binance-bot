@@ -363,10 +363,7 @@ async function main() {
         console.log('Verificando saldo...');
         const accountInfo = await client.futuresAccountInfo();
         const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
-        if (usdtBalance < 10) {
-            console.log(colors.red, `❌ Saldo de ${STRATEGY_CONFIG.quoteAsset} (${usdtBalance.toFixed(2)}) é muito baixo. Mínimo necessário: 10 USDT.`, colors.reset);
-            return;
-        }
+        
         console.log(colors.green, `✅ Saldo de margem: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
 
         // Inicializa o módulo de IA primeiro (carrega modelo, dados e estatísticas)

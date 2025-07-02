@@ -1,429 +1,427 @@
-// Este é um bot de scalping avançado que escaneia múltiplos pares de moedas no modo MARGEM.
-
-// 1. Importa as bibliotecas necessárias
+// =================================================================================================
+// 1. IMPORTAÇÕES E CONFIGURAÇÃO INICIAL (bot.js)
+// =================================================================================================
 const Binance = require('binance-api-node').default;
-const { RSI, EMA, MACD, SMA } = require('technicalindicators');
+const { RSI, EMA, MACD, SMA, BollingerBands } = require('technicalindicators');
 const fs = require('fs');
+const path = require('path');
 
-// --- ATENÇÃO: DADOS DE AUTENTICAÇÃO ---
-const apiKey = ''; // Substitua pelas suas chaves reais
-const apiSecret = ''; // Substitua pelas suas chaves reais
+const aiModule = require('./aiModule');
+const websocketService = require('./websocketService');
+const dataHttp = require('./dataHttp'); // Módulo para dados históricos HTTP
 
-// --- CARREGA CONFIGURAÇÕES DO ARQUIVO JSON ---
-const STRATEGY_CONFIG = JSON.parse(fs.readFileSync('config.json'));
+const apiKey = '';
+const apiSecret = '';
 
-// --- CORES E CLIENTE BINANCE ---
-const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m" };
-const client = Binance({ apiKey, apiSecret, timeSync: true });
+const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m", gray: "\x1b[37m" };
+const client = Binance({ apiKey, apiSecret, timeSync: true, recvWindow: 15000 });
 
-// --- ESTADO GLOBAL DO BOT (AGORA UM OBJETO PARA MÚLTIPLOS SÍMBOLOS) ---
-let botState = {}; // Ex: { 'SOLUSDT': { candles: [], hasPosition: false, lastBuyPrice: 0, liquidationPrice: 0 }, 'ADAUSDT': { ... } }
+let botState = {}; // Será inicializado com dados históricos via HTTP
+let exchangeRules = {};
 
 // =================================================================================================
-// FUNÇÃO PRINCIPAL E CONTROLE DO BOT
+// 2. CÉREBRO PRINCIPAL DO BOT (ANÁLISE MULTI-TIMEFRAME E AI)
 // =================================================================================================
-async function main() {
-    showHeader(`Bot Scanner (Margem) - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
-    try {
-        console.log('Verificando saldo inicial e conta de margem...');
-        
-        // --- 1. Gerenciamento de Fundos (Spot para Margem) ---
-        await manageMarginFunds();
 
-        console.log('Iniciando monitoramento de múltiplos pares...');
-        for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-            await initializeSymbol(symbol);
+async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
+    // console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Nova Vela Processada...`);
+
+    // A IA deve coletar os dados processados em tempo real (do WebSocket)
+    aiModule.collectData(symbol, timeframe, candle, indicators);
+
+    // O websocketService agora já garante que o histórico está pronto para notificar o bot
+    // Então, se o callback é chamado, podemos prosseguir com a estratégia principal.
+    if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0]) {
+        console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Vela Principal Processada!`, colors.reset);
+        await runMasterStrategy(symbol, timeframe);
+    }
+}
+
+async function runMasterStrategy(symbol, timeframe) {
+    const symbolState = websocketService.getBotState()[symbol];
+
+    // Com o pré-preenchimento, esta checagem deve sempre ser bem-sucedida ao iniciar.
+    if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
+        console.log(`  [${symbol}] [${timeframe}] ATENÇÃO: runMasterStrategy chamado com histórico insuficiente APÓS AQUECIMENTO INICIAL. Isso não deveria acontecer.`);
+        return;
+    }
+
+    if (symbolState.position.side !== 'NONE') {
+        await manageOpenPosition(symbol);
+        return;
+    }
+
+    const { strategies, aiModule: aiModuleConfig } = STRATEGY_CONFIG;
+    let signal = null;
+    let aiReasoning = null;
+
+    // 1. Prioriza o sinal da IA se ela estiver pronta E a confiança for alta
+    if (aiModuleConfig.enabled && aiModule.isReadyForTrading()) {
+        const aiPrediction = await aiModule.predict(symbol, timeframe, symbolState.data[timeframe].candles);
+
+        if (aiPrediction && aiPrediction.action !== 'HOLD') {
+            if (aiPrediction.confidence > 70) {
+                console.log(colors.magenta, `\n[${symbol}] 🤖 PREVISÃO DA IA (confiança ALTA): ${aiPrediction.action} (${aiPrediction.confidence.toFixed(2)}%)`);
+                signal = {
+                    side: aiPrediction.action,
+                    strategy: 'AI_Prediction',
+                    config: {
+                        takeProfitPercent: aiModuleConfig.tradeConfig.takeProfitPercent,
+                        stopLossPercent: aiModuleConfig.tradeConfig.stopLossPercent,
+                        useInvalidationExit: true
+                    }
+                };
+                aiReasoning = aiPrediction.action;
+            } else if (aiPrediction.confidence > 50) {
+                console.log(colors.gray, `  [${symbol}] 🤖 PREVISÃO DA IA (confiança média): ${aiPrediction.action} (${aiPrediction.confidence.toFixed(2)}%). Usando como confluência.`, colors.reset);
+                aiReasoning = aiPrediction.action;
+            }
+        } else if (aiPrediction && aiPrediction.action === 'HOLD') {
+            console.log(colors.gray, `  [${symbol}] 🤖 PREVISÃO DA IA: HOLD (${aiPrediction.confidence.toFixed(2)}%).`, colors.reset);
+            aiReasoning = 'HOLD';
         }
-        console.log(colors.yellow, "\nO bot está operando em todos os pares via MARGEM. Pressione CTRL + C para parar.", colors.reset);
+    } else if (aiModuleConfig.enabled && !aiModule.isReadyForTrading()) {
+        console.log(colors.gray, `  [${symbol}] 🤖 IA ainda em treinamento ou não pronta. Usando apenas estratégias tradicionais.`, colors.reset);
+    }
 
-        // --- 2. Monitoramento Contínuo de Liquidação (Opcional, para alerta mais rápido) ---
-        setInterval(async () => {
-            await checkMarginHealth();
-        }, 30 * 1000); // Verifica a cada 30 segundos
+    // 2. Estratégias tradicionais (agora podem usar a "opinião" da IA como confluência)
+    if (!signal) {
+        let traditionalSignal = null;
+        if (strategies.trendFollowing.enabled) {
+            traditionalSignal = checkTrendFollowingStrategy(symbol, strategies.trendFollowing);
+        }
+        if (!traditionalSignal && strategies.meanReversion.enabled) {
+            traditionalSignal = checkMeanReversionStrategy(symbol, strategies.meanReversion);
+        }
+        if (!traditionalSignal && strategies.breakout.enabled) {
+            traditionalSignal = checkBreakoutStrategy(symbol, strategies.breakout);
+        }
+
+        if (traditionalSignal) {
+            // Se a IA está pronta E a previsão da IA CONFLITA com o sinal tradicional, NÃO operamos
+            if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning !== 'HOLD' && aiReasoning !== traditionalSignal.side) {
+                console.log(colors.yellow, `\n[${symbol}] 🔀 SINAL TRADICIONAL CONFLITANTE COM IA (${traditionalSignal.side} vs IA ${aiReasoning}). IGNORANDO.`, colors.reset);
+                signal = null; // Zera o sinal se houver conflito
+            }
+            // Se a IA está pronta E a previsão da IA CONFLUI com o sinal tradicional, USAMOS
+            else if (aiModule.isReadyForTrading() && aiReasoning === traditionalSignal.side) {
+                console.log(colors.green, `\n[${symbol}] 📈 SINAL TRADICIONAL (${traditionalSignal.strategy}) + IA CONFLUÊNCIA: ${traditionalSignal.side}`);
+                signal = traditionalSignal;
+            }
+            // Se a IA NÃO ESTÁ PRONTA OU diz HOLD, usamos o sinal tradicional sem confluência
+            else {
+                console.log(colors.green, `\n[${symbol}] 📈 SINAL TRADICIONAL (${traditionalSignal.strategy}) (IA não relevante ou HOLD): ${traditionalSignal.side}`);
+                signal = traditionalSignal;
+            }
+        }
+    }
+
+    if (signal) {
+        console.log(colors.green, `\n[${symbol}] 📈 SINAL DE ENTRADA FINAL: ${signal.strategy} (${signal.side})`);
+        await openPosition(symbol, signal);
+    } else {
+        console.log(`  [${symbol}] Nenhuma oportunidade com confluência encontrada.`);
+    }
+}
+
+async function manageOpenPosition(symbol) {
+    const symbolState = websocketService.getBotState()[symbol];
+    const { entryPrice, side, activeStrategyConfig, activeStrategy } = symbolState.position;
+    const { takeProfitPercent, stopLossPercent, useInvalidationExit } = activeStrategyConfig;
+    const { takerFeePercent } = STRATEGY_CONFIG;
+    const price = symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+    let closeReason = null;
+
+    const adjustedTakeProfitPercent = takeProfitPercent + (takerFeePercent * 2);
+    const slLong = entryPrice * (1 - stopLossPercent / 100);
+    const tpLong = entryPrice * (1 + adjustedTakeProfitPercent / 100);
+    const slShort = entryPrice * (1 + stopLossPercent / 100);
+    const tpShort = entryPrice * (1 - adjustedTakeProfitPercent / 100);
+
+    if (side === 'LONG' && (price <= slLong || price >= tpLong)) {
+        closeReason = price <= slLong ? 'STOP-LOSS' : 'TAKE-PROFIT';
+    } else if (side === 'SHORT' && (price >= slShort || price <= tpShort)) {
+        closeReason = price >= slShort ? 'STOP-LOSS' : 'TAKE-PROFIT';
+    }
+
+    if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {
+        const aiCloseSignal = await aiModule.predictExit(symbol, STRATEGY_CONFIG.timeframesToWatch[0], symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].candles, symbolState.position);
+        if (aiCloseSignal && aiCloseSignal.action === 'CLOSE') {
+            console.log(colors.magenta, `  [${symbol}] 🤖 SINAL DE SAÍDA DA IA: ${aiCloseSignal.reason} (${aiCloseSignal.confidence.toFixed(2)}% de confiança)`);
+            closeReason = 'AI_EXIT_SIGNAL';
+        }
+    }
+
+    if (!closeReason && useInvalidationExit && activeStrategy !== 'AI_Prediction') {
+        let isSignalStillValid = true;
+        if (activeStrategy === 'TrendFollowing') {
+            const longTermTimeframe = STRATEGY_CONFIG.timeframesToWatch[STRATEGY_CONFIG.timeframesToWatch.length - 1];
+            const longTermEma = symbolState.data[longTermTimeframe].indicators.ema;
+            if ((side === 'LONG' && price < longTermEma) || (side === 'SHORT' && price > longTermEma)) {
+                isSignalStillValid = false;
+            }
+        } else if (activeStrategy === 'MeanReversion') {
+            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+            const { bb } = symbolState.data[triggerTF].indicators;
+            if (bb && ((side === 'LONG' && price > bb.middle) || (side === 'SHORT' && price < bb.middle))) {
+                isSignalStillValid = false;
+            }
+        } else if (activeStrategy === 'Breakout') {
+            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+            const { bb } = symbolState.data[triggerTF].indicators;
+            if (bb && ((side === 'LONG' && price < bb.middle) || (side === 'SHORT' && price > bb.middle))) {
+                isSignalStillValid = false;
+            }
+        }
+
+        if (!isSignalStillValid) {
+            closeReason = 'INVALIDATION';
+        }
+    }
+
+    if (closeReason) {
+        console.log(colors.yellow, `\n[${symbol}] 🚨 SINAL PARA FECHAR POSIÇÃO ${side}! Motivo: ${closeReason}`);
+        await closePosition(symbol, closeReason);
+    } else {
+        console.log(`  [${symbol}] Posição ${side} aberta (${symbolState.position.activeStrategy}).`);
+    }
+}
+
+// =================================================================================================
+// 3. MÓDULO DE ESTRATÉGIAS (TRADICIONAIS)
+// =================================================================================================
+
+function checkTrendFollowingStrategy(symbol, config) {
+    const symbolState = websocketService.getBotState()[symbol];
+    const timeframes = STRATEGY_CONFIG.timeframesToWatch;
+    const triggerTF = timeframes[0];
+    const confirmationTF = timeframes[timeframes.length - 1];
+
+    const triggerIndicators = symbolState.data[triggerTF].indicators;
+    const confirmationIndicators = symbolState.data[confirmationTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
+
+    if (!triggerIndicators || !confirmationIndicators || triggerIndicators.rsi === null || confirmationIndicators.ema === null) return null;
+
+    const longConfluence =
+        price > confirmationIndicators.ema &&
+        triggerIndicators.rsi < config.rsiOversold;
+
+    if (longConfluence) {
+        return { side: 'LONG', strategy: 'TrendFollowing', config };
+    }
+
+    const shortConfluence =
+        price < confirmationIndicators.ema &&
+        triggerIndicators.rsi > config.rsiOverbought;
+
+    if (shortConfluence) {
+        return { side: 'SHORT', strategy: 'TrendFollowing', config };
+    }
+
+    return null;
+}
+
+function checkMeanReversionStrategy(symbol, config) {
+    const symbolState = websocketService.getBotState()[symbol];
+    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+    const { bb, rsi } = symbolState.data[triggerTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
+
+    if (!bb || !rsi || bb.lower === null || bb.upper === null || rsi === null) return null;
+
+    if (price < bb.lower && rsi < config.rsiOversold) {
+        return { side: 'LONG', strategy: 'MeanReversion', config };
+    }
+    if (price > bb.upper && rsi > config.rsiOverbought) {
+        return { side: 'SHORT', strategy: 'MeanReversion', config };
+    }
+    return null;
+}
+
+function checkBreakoutStrategy(symbol, config) {
+    const symbolState = websocketService.getBotState()[symbol];
+    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+    const { bb, smaVolume } = symbolState.data[triggerTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
+    const currentVolume = symbolState.data[triggerTF].candles[symbolState.data[triggerTF].candles.length - 1].volume;
+
+    if (!bb || bb.upper === null || bb.lower === null || smaVolume === null || !currentVolume) return null;
+
+    if (price > bb.upper && currentVolume > (smaVolume * config.minVolumeSpike)) {
+        return { side: 'LONG', strategy: 'Breakout', config };
+    }
+    if (price < bb.lower && currentVolume > (smaVolume * config.minVolumeSpike)) {
+        return { side: 'SHORT', strategy: 'Breakout', config };
+    }
+    return null;
+}
+
+// =================================================================================================
+// 4. FUNÇÕES DE ORDEM E AUXILIARES
+// =================================================================================================
+
+async function openPosition(symbol, signal) {
+    const { leverage, marginPercentPerTrade, quoteAsset } = STRATEGY_CONFIG;
+    const price = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+
+    try {
+        const accountInfo = await client.futuresAccountInfo();
+        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === quoteAsset)?.availableBalance || '0');
+        const marginToUse = usdtBalance * (marginPercentPerTrade / 100);
+
+        if (marginToUse * leverage < 5.1) {
+            console.log(colors.yellow, `  [${symbol}] AVISO: Valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) é muito baixo para operar (mínimo Binance: ~5 USDT).`);
+            return;
+        }
+
+        const positionSizeInUsd = marginToUse * leverage;
+        const quantity = positionSizeInUsd / price;
+        const formattedQuantity = parseFloat(quantity).toFixed(exchangeRules[symbol].quantityPrecision);
+
+        const order = await client.futuresOrder({
+            symbol,
+            side: signal.side === 'LONG' ? 'BUY' : 'SELL',
+            type: 'MARKET',
+            quantity: formattedQuantity,
+        });
+
+        const positionState = websocketService.getBotState()[symbol].position;
+        positionState.side = signal.side;
+        positionState.quantity = parseFloat(order.executedQty);
+        positionState.activeStrategy = signal.strategy;
+        positionState.activeStrategyConfig = signal.config;
+
+        const trades = await client.futuresUserTrades({ symbol, orderId: order.orderId });
+        if (trades && trades.length > 0) {
+            positionState.entryFee = parseFloat(trades[0].commission);
+            positionState.entryPrice = parseFloat(trades[0].price);
+        } else {
+            console.log(colors.yellow, `  [${symbol}] Aviso: Detalhes do trade não disponíveis imediatamente. Usando preço e taxa estimados.`);
+            positionState.entryFee = (parseFloat(order.executedQty) * price * STRATEGY_CONFIG.takerFeePercent) / 100;
+            positionState.entryPrice = price;
+        }
+
+        console.log(colors.green, `  [${symbol}] POSIÇÃO ABERTA: ${positionState.side} ${positionState.quantity} @ ${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} (${positionState.activeStrategy})`);
+    } catch (error) { handleApiError(error); }
+}
+
+async function closePosition(symbol, reason) {
+    const positionState = websocketService.getBotState()[symbol].position;
+    try {
+        const order = await client.futuresOrder({
+            symbol,
+            side: positionState.side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'MARKET',
+            quantity: positionState.quantity.toString(),
+            reduceOnly: 'true',
+        });
+
+        console.log(colors.yellow, `  [${symbol}] POSIÇÃO FECHADA: ${positionState.side} ${positionState.quantity} @ ${websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice.toFixed(exchangeRules[symbol].quantityPrecision)}. Motivo: ${reason}`);
+
+        websocketService.getBotState()[symbol].position = { side: 'NONE' };
+
+    } catch (error) { handleApiError(error); }
+}
+
+async function main() {
+    showHeader(`Bot MTA v5 - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
+    try {
+        console.log('Buscando regras dos ativos...');
+        const exchangeInfo = await client.futuresExchangeInfo();
+        for (const rule of exchangeInfo.symbols) {
+            exchangeRules[rule.symbol] = { quantityPrecision: rule.quantityPrecision };
+        }
+
+        console.log('Verificando saldo...');
+        const accountInfo = await client.futuresAccountInfo();
+        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
+        if (usdtBalance < 10) {
+            console.log(colors.red, `❌ Saldo de ${STRATEGY_CONFIG.quoteAsset} (${usdtBalance.toFixed(2)}) é muito baixo. Mínimo necessário: 10 USDT.`, colors.reset);
+            return;
+        }
+        console.log(colors.green, `✅ Saldo de margem: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
+
+        // Inicializa o módulo de IA primeiro (carrega modelo, dados e estatísticas)
+        console.log('Iniciando módulo de IA...');
+        await aiModule.init();
+
+        // NOVO: Busca dados históricos via HTTP para a IA no início E PRE-PREENCHE botState
+        console.log('\n[Bot] Buscando dados históricos via HTTP para treinamento inicial da IA e pré-aquecimento das estratégias...');
+        dataHttp.setBinanceClient(client);
         
+        // Objeto temporário para acumular os dados históricos que serão passados para o websocketService
+        const historicalDataForBotState = {}; 
+
+        for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
+            historicalDataForBotState[symbol] = { data: {} }; // Inicializa a estrutura para o símbolo
+            for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
+                const historicalData = await dataHttp.getHistoricalData(symbol, timeframe);
+                
+                // Se obteve dados históricos via HTTP, armazena para a IA e para o botState
+                if (historicalData && historicalData.length > 0) {
+                    aiModule.collectHistoricalDataFromHttp(symbol, timeframe, historicalData);
+                    // Copia as velas para o botState ANTES de iniciar os WebSockets
+                    historicalDataForBotState[symbol].data[timeframe] = {
+                        candles: historicalData, // Usa os candles já processados do dataHttp
+                        indicators: historicalData[historicalData.length - 1], // Últimos indicadores da última vela
+                        lastPrice: historicalData[historicalData.length - 1].close, // Último preço de fechamento
+                        // Marca como pronto pois já tem o histórico via HTTP
+                        isReady: true // Uma nova flag para o websocketService saber que já está pronto
+                    };
+                    console.log(colors.green, `  [Bot] Histórico (${historicalData.length} velas) para ${symbol} - [${timeframe}] PRÉ-AQUECIDO via HTTP.`);
+                } else {
+                    // Se a busca HTTP falhou ou não retornou dados, o timeframe não estará "aquecido" inicialmente
+                    console.log(colors.yellow, `  [Bot] Nenhum histórico HTTP para ${symbol} - [${timeframe}]. Ele aquecerá via WebSocket.`, colors.reset);
+                    historicalDataForBotState[symbol].data[timeframe] = {
+                        candles: [], indicators: {}, lastPrice: 0, isReady: false
+                    };
+                }
+            }
+        }
+        console.log('[Bot] Coleta de dados históricos HTTP para IA e pré-aquecimento concluída.');
+
+
+        // Inicia o serviço de WebSockets para dados em tempo real, passando os dados pré-aquecidos
+        console.log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
+        botState = await websocketService.initialize(client, historicalDataForBotState, onNewCandleProcessed);
+
+
+        console.log(colors.yellow, "\nO bot está operando. Pressione CTRL + C para parar.", colors.reset);
+        console.log(colors.yellow, "A IA começará a treinar periodicamente com os dados coletados.");
+
+        if (STRATEGY_CONFIG.aiModule.enabled) {
+            setInterval(async () => {
+                // A IA só deve treinar se houver dados suficientes para TODOS os timeframes configurados
+                // A condição é baseada no aiModule.aiTrainingData (que já tem os dados HTTP + WS)
+                const allTimeframesHaveEnoughDataForAI = STRATEGY_CONFIG.symbolsToWatch.every(symbol =>
+                    STRATEGY_CONFIG.timeframesToWatch.every(tf =>
+                        aiModule.getCollectedDataCount(symbol, tf) >= aiModule.aiModel.minDataForTraining
+                    )
+                );
+                
+                if (allTimeframesHaveEnoughDataForAI) {
+                    console.log(colors.yellow, "\nIniciando treinamento da IA...");
+                    await aiModule.train();
+                    console.log(colors.yellow, "Treinamento da IA concluído.");
+                } else {
+                    console.log(colors.gray, "🤖 IA: Histórico insuficiente em um ou mais timeframes para iniciar o treinamento.", colors.reset);
+                }
+            }, STRATEGY_CONFIG.aiModule.trainingIntervalMs || 3600000);
+        } else {
+            console.log(colors.yellow, "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.", colors.reset);
+        }
+
     } catch (error) {
         handleApiError(error);
         process.exit(1);
     }
 }
 
-/**
- * Gerencia a transferência automática de fundos do Spot para a carteira de Margem.
- */
-async function manageMarginFunds() {
-    const { quoteAsset, minMarginBalanceTransfer, transferAmountPercent } = STRATEGY_CONFIG;
-    try {
-        const spotAccountInfo = await client.accountInfo();
-        const usdtSpotBalance = parseFloat(spotAccountInfo.balances.find(b => b.asset === quoteAsset)?.free || '0');
-
-        const marginAccountInfo = await client.marginAccountInfo();
-        const usdtMarginBalance = parseFloat(marginAccountInfo.userAssets.find(b => b.asset === quoteAsset)?.free || '0');
-        const marginLevel = parseFloat(marginAccountInfo.marginLevel);
-
-        console.log(`\n[FUNDS] Saldo SPOT de ${quoteAsset}: ${usdtSpotBalance.toFixed(2)}`);
-        console.log(`[FUNDS] Saldo MARGEM de ${quoteAsset}: ${usdtMarginBalance.toFixed(2)}`);
-        console.log(`[FUNDS] Nível de Margem: ${marginLevel.toFixed(2)}`);
-
-        // Condição para transferir: Saldo de Margem muito baixo E Saldo Spot suficiente
-        if (usdtMarginBalance < minMarginBalanceTransfer && usdtSpotBalance >= (minMarginBalanceTransfer * 0.5)) { // Garante que há algo no spot para transferir
-            const amountToTransfer = usdtSpotBalance * (transferAmountPercent / 100);
-            if (amountToTransfer > 0) {
-                console.log(colors.yellow, `  [FUNDS] Saldo de margem (${usdtMarginBalance.toFixed(2)}) abaixo do limite (${minMarginBalanceTransfer}).`);
-                console.log(colors.yellow, `  [FUNDS] Transferindo ${amountToTransfer.toFixed(2)} ${quoteAsset} do SPOT para MARGEM...`);
-                await client.transfer({
-                    asset: quoteAsset,
-                    amount: amountToTransfer.toFixed(2), // Garante que o valor está formatado corretamente
-                    type: 'MAIN_MARGIN' // Para Cross Margin
-                });
-                console.log(colors.green, `  [FUNDS] Transferência concluída com sucesso!`, colors.reset);
-            } else {
-                console.log(colors.yellow, `  [FUNDS] Saldo SPOT insuficiente para transferência.`, colors.reset);
-            }
-        } else {
-            console.log(colors.green, `  [FUNDS] Saldo de margem OK.`, colors.reset);
-        }
-
-        if (usdtMarginBalance < 11 && usdtSpotBalance < 11) { // Mínimo para operar
-            console.log(colors.red, `❌ Saldo total (${quoteAsset}) muito baixo para iniciar as operações.`, colors.reset);
-            process.exit(1);
-        }
-    } catch (error) {
-        console.error(colors.red, `Erro ao gerenciar fundos de margem:`, error.body || error.message, colors.reset);
-    }
-}
-
-/**
- * Verifica a saúde geral da conta de margem e o risco de liquidação.
- */
-async function checkMarginHealth() {
-    const { targetMarginLevel } = STRATEGY_CONFIG;
-    try {
-        const marginAccountInfo = await client.marginAccountInfo();
-        const marginLevel = parseFloat(marginAccountInfo.marginLevel);
-        
-        console.log(colors.yellow, `\n[RISK] Nível de Margem Geral: ${marginLevel.toFixed(2)} (Alvo: >${targetMarginLevel})`);
-
-        if (marginLevel <= targetMarginLevel) {
-            console.log(colors.red, `🚨🚨🚨 [RISK] NÍVEL DE MARGEM CRÍTICO! ${marginLevel.toFixed(2)} Abaixo do alvo (${targetMarginLevel}). Risco de LIQUIDAÇÃO!`);
-            console.log(colors.red, `  Considere adicionar fundos ou fechar posições manualmente.`, colors.reset);
-            // Aqui você poderia adicionar lógica para:
-            // 1. Enviar um alerta (e-mail, Telegram).
-            // 2. Tentar fechar todas as posições (fechamento de emergência).
-            // 3. Transferir mais fundos (se houver no Spot e não tiver sido feito).
-        }
-        
-        // Para cada símbolo com posição aberta, verificar o preço de liquidação
-        for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-            const state = botState[symbol];
-            if (state && state.hasPosition && state.liquidationPrice > 0) {
-                const currentPrice = parseFloat(state.candles[state.candles.length - 1]?.close || 0);
-                if (currentPrice > 0) {
-                    const distanceToLiquidation = ((currentPrice - state.liquidationPrice) / currentPrice) * 100;
-                    const color = distanceToLiquidation < 5 ? colors.red : (distanceToLiquidation < 10 ? colors.yellow : colors.green);
-                    console.log(color, `  [RISK] [${symbol}] Preço Atual: ${currentPrice.toFixed(4)} | Preço de Liquidação: ${state.liquidationPrice.toFixed(4)} | Distância: ${distanceToLiquidation.toFixed(2)}%`, colors.reset);
-                    
-                    if (distanceToLiquidation < 2) { // Exemplo: alerta muito próximo da liquidação
-                        console.log(colors.red, `    [RISK] ⚠️⚠️⚠️ [${symbol}] MUITO PRÓXIMO DA LIQUIDAÇÃO!`, colors.reset);
-                        // Lógica de emergência para fechar a posição se o risco for extremo
-                        // await executeSellOrder(symbol, currentPrice, "LIQUIDACAO_EMINENTE", state.baseAssetAmount);
-                    }
-                }
-            }
-        }
-    } catch (error) {
-        console.error(colors.red, `Erro ao verificar saúde da margem:`, error.body || error.message, colors.reset);
-    }
-}
-
-
-async function initializeSymbol(symbol) {
-    console.log(`[${symbol}] Buscando histórico de candles...`);
-    botState[symbol] = {
-        websocket: null,
-        candles: [],
-        hasPosition: false,
-        lastBuyPrice: 0,
-        liquidationPrice: 0, // Adicionado para armazenar o preço de liquidação
-        baseAssetAmount: 0 // Quantidade do ativo base em posse
-    };
-
-    const historicalCandles = await client.candles({ symbol, interval: STRATEGY_CONFIG.interval, limit: STRATEGY_CONFIG.emaPeriod + 50 });
-    botState[symbol].candles = historicalCandles;
-
-    botState[symbol].websocket = client.ws.candles(symbol, STRATEGY_CONFIG.interval, (candle) => {
-        if (candle.isFinal) {
-            handleCandle(candle);
-        }
-    });
-    console.log(colors.green, `[${symbol}] Monitoramento em tempo real iniciado.`);
-}
-
-/**
- * Função central que recebe todos os candles e direciona para a análise correta.
- */
-async function handleCandle(candle) {
-    const symbol = candle.symbol;
-    const currentPrice = parseFloat(candle.close);
-    console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] Preço: ${currentPrice.toFixed(4)}`);
-    
-    const state = botState[symbol];
-    state.candles.push(candle);
-    if (state.candles.length > STRATEGY_CONFIG.emaPeriod + 50) state.candles.shift();
-    
-    const closePrices = state.candles.map(c => parseFloat(c.close));
-    const volumes = state.candles.map(c => parseFloat(c.volume));
-    const macdInput = { values: closePrices, ...STRATEGY_CONFIG.macd };
-
-    const indicators = {
-        rsi: RSI.calculate({ period: STRATEGY_CONFIG.rsiPeriod, values: closePrices }).pop(),
-        ema: EMA.calculate({ period: STRATEGY_CONFIG.emaPeriod, values: closePrices }).pop(),
-        macd: MACD.calculate(macdInput).pop(),
-        volume: volumes[volumes.length - 1],
-        volumeSma: SMA.calculate({ period: STRATEGY_CONFIG.volumeSmaPeriod, values: volumes }).pop(),
-    };
-    
-    console.log(`  [${symbol}] Indicadores: RSI=${indicators.rsi.toFixed(2)} | EMA=${indicators.ema.toFixed(2)} | MACD Hist=${indicators.macd?.histogram.toFixed(4)}`);
-    
-    // Atualiza o estado da posição e o preço de liquidação
-    await updatePositionAndLiquidation(symbol);
-
-    await runTradingStrategy(symbol, currentPrice, indicators);
-}
-
-/**
- * Atualiza o estado da posição e o preço de liquidação para um dado símbolo.
- */
-async function updatePositionAndLiquidation(symbol) {
-    const state = botState[symbol];
-    const baseAsset = symbol.replace(STRATEGY_CONFIG.quoteAsset, '');
-    try {
-        const marginAccountInfo = await client.marginAccountInfo();
-        const baseAssetInfo = marginAccountInfo.userAssets.find(a => a.asset === baseAsset);
-        const quoteAssetInfo = marginAccountInfo.userAssets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset);
-        
-        state.baseAssetAmount = parseFloat(baseAssetInfo?.netAsset || '0');
-        state.hasPosition = state.baseAssetAmount > 0.0001; // Verifica se há uma posição significativa
-        state.liquidationPrice = parseFloat(baseAssetInfo?.liquidationPrice || '0'); // Preço de liquidação do ativo
-
-        // O lastBuyPrice precisa ser rastreado de forma mais robusta em margem,
-        // mas para este scalping simples, continuaremos usando o preço da ordem de compra.
-        // Se o bot for reiniciado com posições abertas, lastBuyPrice será 0.
-        // Uma solução mais avançada leria as posições da Binance para inicializar lastBuyPrice.
-
-        // Se o bot tem uma posição mas o lastBuyPrice não foi setado (ex: bot reiniciado com posições),
-        // uma forma de estimar seria olhar para o histórico de ordens ou calcular um custo médio.
-        // Por simplicidade, se lastBuyPrice for 0 e hasPosition for true, não calcularemos stop/take.
-        if (state.hasPosition && state.lastBuyPrice === 0) {
-            console.log(colors.yellow, `  [${symbol}] Posição detectada, mas lastBuyPrice não está disponível (bot pode ter sido reiniciado). Stop/Take não serão calculados.`, colors.reset);
-        }
-
-    } catch (error) {
-        console.error(colors.red, `Erro ao atualizar posição/liquidação para ${symbol}:`, error.body || error.message, colors.reset);
-        state.hasPosition = false; // Assume que não há posição para evitar erros de cálculo
-    }
-}
-
-
-// =================================================================================================
-// LÓGICA DE TRADING (AGORA RECEBE O SÍMBOLO COMO PARÂMETRO)
-// =================================================================================================
-async function runTradingStrategy(symbol, price, indicators) {
-    const { rsiOversold, rsiOverbought, stopLossPercent, takeProfitPercent } = STRATEGY_CONFIG;
-    const { rsi, ema, macd, volume, volumeSma } = indicators;
-    const symbolState = botState[symbol];
-
-    // Verifica a saúde da margem antes de qualquer decisão de trade
-    const marginAccountInfo = await client.marginAccountInfo();
-    const marginLevel = parseFloat(marginAccountInfo.marginLevel);
-    if (marginLevel <= STRATEGY_CONFIG.targetMarginLevel) {
-        console.log(colors.red, `  [${symbol}] 🚨 Nível de Margem Crítico (${marginLevel.toFixed(2)})! Não realizando novas ordens.`, colors.reset);
-        return; // Impede novas ordens se o risco de liquidação for alto
-    }
-
-    if (symbolState.hasPosition) {
-        if (symbolState.lastBuyPrice === 0) {
-            console.log(colors.yellow, `  [${symbol}] Posição aberta, mas sem lastBuyPrice. Não é possível calcular Stop/Take.`, colors.reset);
-            return;
-        }
-
-        const { lastBuyPrice } = symbolState;
-        const stopLossPrice = lastBuyPrice * (1 - (stopLossPercent / 100));
-        const takeProfitPrice = lastBuyPrice * (1 + (takeProfitPercent / 100));
-        let sellReason = null;
-
-        // Prioridade: Stop-Loss, Take-Profit, Sinais de Indicadores (RSI sobrecomprado)
-        if (price <= stopLossPrice) sellReason = `STOP-LOSS (Margem)`;
-        else if (price >= takeProfitPrice) sellReason = `TAKE-PROFIT (Margem)`;
-        else if (rsi > rsiOverbought) sellReason = `SINAL RSI (Margem)`;
-        // Considerar também o nível de liquidação como motivo para venda de emergência
-        else if (price <= symbolState.liquidationPrice * 1.005 && symbolState.liquidationPrice > 0) { // 0.5% acima do preço de liquidação
-            sellReason = `PRÓXIMO_LIQUIDACAO_EMERGENCIA`;
-        }
-
-        if (sellReason) {
-            console.log(colors.red, `\n[${symbol}] 📉 SINAL DE VENDA! Motivo: ${sellReason}`);
-            await executeSellOrder(symbol, price, sellReason, symbolState.baseAssetAmount);
-        } else {
-            console.log(`  [${symbol}] Posição aberta em margem. Alvo: ${takeProfitPrice.toFixed(4)} | Stop: ${stopLossPrice.toFixed(4)} | Liq: ${symbolState.liquidationPrice.toFixed(4)} | Saldo Base: ${symbolState.baseAssetAmount.toFixed(4)}`);
-        }
-    } else {
-        const isRsiLow = rsi < rsiOversold;
-        const isAboveEma = price > ema;
-        const isMacdPositive = macd?.histogram > 0;
-        const isVolumeHigh = volume > volumeSma;
-
-        console.log(`  [${symbol}] Analisando Compra (Margem): RSI? ${isRsiLow} | EMA? ${isAboveEma} | MACD? ${isMacdPositive} | Vol? ${isVolumeHigh}`);
-        if (isRsiLow && isAboveEma && isMacdPositive && isVolumeHigh) {
-            console.log(colors.green, `\n[${symbol}] 📈 SINAL DE COMPRA CONFIRMADO!`);
-            await executeBuyOrder(symbol);
-        }
-    }
-}
-
-// =================================================================================================
-// FUNÇÕES DE EXECUÇÃO DE ORDEM (AGORA PARA MARGEM)
-// =================================================================================================
-async function executeBuyOrder(symbol) {
-    const { capitalAllocationPercent, quoteAsset } = STRATEGY_CONFIG;
-    const baseAsset = symbol.replace(quoteAsset, '');
-    try {
-        const marginAccountInfo = await client.marginAccountInfo();
-        const usdtMarginBalance = parseFloat(marginAccountInfo.userAssets.find(b => b.asset === quoteAsset)?.free || '0');
-        
-        // Calcular o capital a ser alocado para este trade (5% do saldo disponível na carteira de margem)
-        const capitalToAllocate = usdtMarginBalance * (capitalAllocationPercent / 100);
-        
-        // Obter informações do símbolo para precisão
-        const exchangeInfo = await client.exchangeInfo({ symbol });
-        const symbolFilter = exchangeInfo.symbols.find(s => s.symbol === symbol);
-        const minNotionalFilter = symbolFilter.filters.find(f => f.filterType === 'MIN_NOTIONAL');
-        const minNotional = parseFloat(minNotionalFilter?.minNotional || '10'); // Default para 10 se não encontrar
-
-        if (capitalToAllocate < minNotional) {
-            console.log(colors.yellow, `  [${symbol}] AVISO: Capital alocado (${capitalToAllocate.toFixed(2)} ${quoteAsset}) é menor que o mínimo nocional (${minNotional}) para o par.`, colors.reset);
-            return;
-        }
-
-        console.log(`  [${symbol}] Executando ordem de compra a mercado de MARGEM de ${capitalToAllocate.toFixed(2)} ${quoteAsset} (5% do capital)...`);
-        
-        const order = await client.marginOrder({ 
-            symbol, 
-            side: 'BUY', 
-            type: 'MARKET', 
-            quoteOrderQty: capitalToAllocate.toFixed(2), // Usamos quoteOrderQty para especificar o valor em USDT
-            sideEffectType: 'AUTO_BORROW_AND_REPAY' 
-        });
-        
-        const symbolState = botState[symbol];
-        symbolState.hasPosition = true;
-        symbolState.lastBuyPrice = parseFloat(order.cummulativeQuoteQty) / parseFloat(order.executedQty); 
-        symbolState.baseAssetAmount = parseFloat(order.executedQty); // Armazena a quantidade comprada
-        logOrderExecution(order, 'BUY', symbolState.lastBuyPrice);
-
-        // Após a compra, atualiza o preço de liquidação
-        await updatePositionAndLiquidation(symbol);
-
-    } catch (error) { 
-        console.error(colors.red, `Erro ao executar ordem de compra em margem para ${symbol}:`, error.body || error.message, colors.reset);
-        handleApiError(error); 
-    }
-}
-
-async function executeSellOrder(symbol, price, reason, amountToSellFromState) {
-    const baseAsset = symbol.replace(STRATEGY_CONFIG.quoteAsset, '');
-    try {
-        // Usamos a quantidade armazenada no estado ou buscamos se for 0
-        let assetBalanceToSell = amountToSellFromState; 
-        if (!assetBalanceToSell || assetBalanceToSell < 0.0001) { // Garante que a quantidade é válida
-            const marginAccountInfo = await client.marginAccountInfo();
-            assetBalanceToSell = parseFloat(marginAccountInfo.userAssets.find(b => b.asset === baseAsset)?.netAsset || '0');
-        }
-
-        const exchangeInfo = await client.exchangeInfo({ symbol });
-        const symbolFilter = exchangeInfo.symbols.find(s => s.symbol === symbol);
-        const minNotionalFilter = symbolFilter.filters.find(f => f.filterType === 'MIN_NOTIONAL');
-        const minNotional = parseFloat(minNotionalFilter?.minNotional || '10');
-
-        if (assetBalanceToSell * price < minNotional) {
-            console.log(colors.yellow, `  [${symbol}] AVISO: Valor da ordem de venda (${(assetBalanceToSell * price).toFixed(2)}) é menor que o mínimo nocional (${minNotional}).`, colors.reset);
-            return;
-        }
-
-        // Arredondar a quantidade para a precisão do ativo
-        const assetPrecision = symbolFilter.filters.find(f => f.filterType === 'LOT_SIZE').stepSize.indexOf('1') -1;
-        const roundedAssetBalanceToSell = parseFloat(assetBalanceToSell.toFixed(assetPrecision));
-
-        if (roundedAssetBalanceToSell <= 0) {
-            console.log(colors.yellow, `  [${symbol}] Nenhuma quantidade válida para vender (${roundedAssetBalanceToSell}). Pulando venda.`, colors.reset);
-            return;
-        }
-
-        console.log(`  [${symbol}] Executando ordem de venda a mercado de MARGEM de ${roundedAssetBalanceToSell.toFixed(4)} ${baseAsset}... (Motivo: ${reason})`);
-        
-        const order = await client.marginOrder({ 
-            symbol, 
-            side: 'SELL', 
-            type: 'MARKET', 
-            quantity: roundedAssetBalanceToSell, // Vende a quantidade exata
-            sideEffectType: 'AUTO_BORROW_AND_REPAY' 
-        });
-        
-        const symbolState = botState[symbol];
-        logOrderExecution(order, 'SELL', symbolState.lastBuyPrice, price, reason);
-        symbolState.hasPosition = false;
-        symbolState.lastBuyPrice = 0; 
-        symbolState.liquidationPrice = 0;
-        symbolState.baseAssetAmount = 0;
-
-        // Após a venda, é bom verificar a saúde da margem novamente
-        await checkMarginHealth();
-    } catch (error) { 
-        console.error(colors.red, `Erro ao executar ordem de venda em margem para ${symbol}:`, error.body || error.message, colors.reset);
-        handleApiError(error); 
-    }
-}
-
-// =================================================================================================
-// FUNÇÕES AUXILIARES
-// =================================================================================================
-function logOrderExecution(order, side, buyPrice, sellPrice, reason) {
-    const pnl = side === 'SELL' ? (sellPrice - buyPrice) * parseFloat(order.executedQty) : 0;
-    const color = side === 'BUY' ? colors.green : (pnl > 0 ? colors.green : colors.red);
-    const title = side === 'BUY' ? `ORDEM DE COMPRA EXECUTADA (MARGEM)!` : `ORDEM DE VENDA EXECUTADA (MARGEM)! (${reason})`;
-    
-    console.log(color, `  [${order.symbol}] ------------------------------------------`);
-    console.log(`  [${order.symbol}] ✅ ${title}`);
-    console.log(`  - Quantidade: ${parseFloat(order.executedQty).toFixed(4)}`);
-    console.log(`  - Valor Total: ${parseFloat(order.cummulativeQuoteQty).toFixed(2)} USDT`);
-    if (side === 'SELL') console.log(`  - Lucro/Prejuízo (P&L): ${pnl.toFixed(2)} USDT`);
-    console.log(`  [${order.symbol}] ------------------------------------------`, colors.reset);
-}
 function showHeader(title) { console.clear(); console.log(colors.cyan, `================== ${title} ==================\n`, colors.reset); }
-function handleApiError(error) { 
-    console.error(colors.red, '\n❌ Ocorreu um erro:', `[${error.code || 'S/C'}] ${error.message}`, colors.reset); 
-    if (error.code === -2011) { 
-        console.log(colors.yellow, '  (Pode indicar um problema de saldo de margem ou limite de empréstimo/ordem).', colors.reset);
-    } else if (error.code === -1021) { 
-        console.log(colors.yellow, '  (Erro de sincronização de tempo. Verifique a hora do seu sistema).', colors.reset);
-    } else if (error.code === -4028) { // Order would immediately trigger.
-        console.log(colors.yellow, '  (Erro de precificação: A ordem de mercado pode ter falhado devido a grande variação no livro de ordens, ou preço de Stop/Take muito próximo).', colors.reset);
-    } else if (error.code === -1013) { // Filter failure: MIN_NOTIONAL, LOT_SIZE
-        console.log(colors.yellow, `  (Erro de filtro: Quantidade ou valor da ordem não atende aos requisitos mínimos/máximos do par. Checar STRATEGY_CONFIG e precisão. ${error.message})`, colors.reset);
-    }
-    // Adicionar mais tratamentos de erro específicos da API de margem
-}
-function gracefulShutdown() {
-    console.log(colors.yellow, "\nRecebido sinal de encerramento...");
-    for (const symbol in botState) {
-        if (botState[symbol].websocket) {
-            console.log(`[${symbol}] Fechando conexão WebSocket...`);
-            botState[symbol].websocket();
-        }
-    }
-    console.log("Bot encerrado de forma limpa.", colors.reset);
-    process.exit(0);
-}
+function handleApiError(error) { console.error(colors.red, '\n❌ Erro na API:', `[${error.code || 'S/C'}] ${error.message}`, colors.reset); }
+function gracefulShutdown() { console.log(colors.yellow, "\nEncerrando bot..."); process.exit(0); }
 
-// --- INÍCIO DO PROGRAMA ---
 process.on('SIGINT', gracefulShutdown);
-main().catch(error => { console.error(colors.red, '❌ Erro fatal:', error, colors.reset); process.exit(1); });
+main();

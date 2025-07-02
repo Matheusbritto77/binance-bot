@@ -1,21 +1,78 @@
 {
-  "symbolsToWatch": ["SOLUSDT", "ADAUSDT"],
-  "interval": "1m",
-  "rsiPeriod": 14,
-  "emaPeriod": 20,
-  "macd": {
-    "fastPeriod": 12,
-    "slowPeriod": 26,
-    "signalPeriod": 9
-  },
-  "volumeSmaPeriod": 20,
-  "rsiOversold": 30,
-  "rsiOverbought": 70,
-  "stopLossPercent": 0.5,     // Stop Loss de 0.5% (curto)
-  "takeProfitPercent": 0.8,   // Take Profit de 0.8% (curto)
-  "capitalAllocationPercent": 5, // Novo: % do capital total a ser usado por trade (ex: 5% da margem disponível)
-  "quoteAsset": "USDT",
-  "minMarginBalanceTransfer": 50, // Novo: Saldo mínimo em USDT na carteira Spot para iniciar a transferência para margem
-  "transferAmountPercent": 20,    // Novo: % do saldo Spot a ser transferido para Margem se abaixo do minMarginBalance
-  "targetMarginLevel": 1.5      // Novo: Nível de margem alvo para monitoramento de risco (Binance exige >1.1 para liquidação)
+    "symbolsToWatch": [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "DOTUSDT",
+        "LTCUSDT",
+        "BCHUSDT",
+        "LINKUSDT",
+        "ETCUSDT",
+        "TRXUSDT",
+        "MATICUSDT",
+        "NEARUSDT",
+        "APTUSDT"
+    
+    ],
+    "timeframesToWatch": [
+        "1m",
+        "5m",
+        "15m",
+        "1h"
+    ],
+    "quoteAsset": "USDT",
+    "leverage": 2,
+    "marginPercentPerTrade": 1,
+    "takerFeePercent": 0.04,
+
+    "strategies": {
+        "trendFollowing": {
+            "enabled": true,
+            "useInvalidationExit": true,
+            "emaPeriod": 200,
+            "rsiPeriod": 14,
+            "rsiOversold": 35,
+            "rsiOverbought": 65,
+            "macd": {
+                "fastPeriod": 12,
+                "slowPeriod": 26,
+                "signalPeriod": 9
+            },
+            "takeProfitPercent": 5,
+            "stopLossPercent": 2.5
+        },
+        "meanReversion": {
+            "enabled": true,
+            "useInvalidationExit": true,
+            "bollingerPeriod": 20,
+            "bollingerStdDev": 2,
+            "rsiPeriod": 14,
+            "rsiOversold": 30,
+            "rsiOverbought": 70,
+            "takeProfitPercent": 2,
+            "stopLossPercent": 1
+        },
+        "breakout": {
+            "enabled": true,
+            "useInvalidationExit": false,
+            "bollingerPeriod": 20,
+            "bollingerStdDev": 2,
+            "volumeSmaPeriod": 20,
+            "minVolumeSpike": 2,
+            "takeProfitPercent": 3,
+            "stopLossPercent": 1.5
+        }
+    },
+    "aiModule": {
+        "enabled": true,
+        "trainingIntervalMs": 3600000,
+        "tradeConfig": {
+            "takeProfitPercent": 3.0,
+            "stopLossPercent": 1.5
+        }
+    }
 }

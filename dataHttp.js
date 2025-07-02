@@ -1,0 +1,128 @@
+// =================================================================================================
+// dataHttp.js: Módulo para Buscar Dados Históricos via Requisições HTTP
+// =================================================================================================
+const Binance = require('binance-api-node').default; // Cliente Binance para requisições HTTP
+const { RSI, EMA, SMA, BollingerBands } = require('technicalindicators'); // Para calcular indicadores em dados históricos
+const fs = require('fs');
+const path = require('path');
+
+const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m" };
+
+// O cliente Binance será passado para este módulo no `main` do bot.js
+let binanceClient;
+
+/**
+ * Mapeia o timeframe para o limite de velas desejado para dados históricos.
+ * Adaptação para cobrir até 7 dias, respeitando o limite de 1500 da API da Binance.
+ */
+function getRequestedLimit(timeframe) {
+    switch(timeframe) {
+        // Estes limites visam cobrir aproximadamente 7 dias, mas respeitando o limite de 1500 por requisição.
+        // Para mais de 1500 velas, seria necessária uma lógica de paginação/chunking por data.
+        case '1m': return 1130; // 7 dias = 10080 velas. Limitado para uma única requisição.
+        case '5m': return 1130; // 7 dias = 2016 velas. Limitado para uma única requisição.
+        case '15m': return 1130; // Cobre ~7 dias e está abaixo de 1500.
+        case '1h': return 1130;  // Cobre ~7 dias e está abaixo de 1500.
+        case '4h': return 1130;   // Cobre ~7 dias.
+        case '1d': return 1130;   // Cobre ~7 dias.
+        default: return 300; // Padrão
+    }
+}
+
+/**
+ * Processa um array de velas históricas, calculando indicadores e features para a IA.
+ * @param {Array<object>} candles - Array de velas brutas da Binance.
+ * @param {string} timeframe - O tempo gráfico.
+ * @returns {Array<object>} Array de objetos de dados prontos para a IA (com features e indicadores).
+ */
+function processHistoricalCandlesForAI(candles, timeframe) {
+    const processedData = [];
+    const closePrices = []; // Para calcular indicadores
+    const volumes = []; // Para SMA de Volume
+
+    const volumeSmaPeriod = STRATEGY_CONFIG.strategies.breakout?.volumeSmaPeriod || 20;
+
+    candles.forEach((candle, index) => {
+        closePrices.push(parseFloat(candle.close));
+        volumes.push(parseFloat(candle.volume));
+
+        // Calcular indicadores para este ponto histórico (recalculados passo a passo)
+        const rsiVal = closePrices.length >= 14 ? RSI.calculate({ period: 14, values: closePrices }).pop() : null;
+        const emaVal = closePrices.length >= 200 ? EMA.calculate({ period: 200, values: closePrices }).pop() : null;
+        const bbVal = closePrices.length >= 20 ? BollingerBands.calculate({ period: 20, stdDev: 2, values: closePrices }).pop() : null;
+        const smaVolumeVal = volumes.length >= volumeSmaPeriod ? SMA.calculate({ period: volumeSmaPeriod, values: volumes }).pop() : null;
+
+        // Calcular features derivadas (como variação de preço/volume)
+        const previousCandle = index > 0 ? candles[index - 1] : null;
+        const currentClose = parseFloat(candle.close);
+        const currentVolume = parseFloat(candle.volume);
+
+        // Criar um objeto de dados completo para a IA
+        const dataPointForAI = {
+            timestamp: parseInt(candle.closeTime),
+            open: parseFloat(candle.open),
+            high: parseFloat(candle.high),
+            low: parseFloat(candle.low),
+            close: currentClose,
+            volume: currentVolume,
+            rsi: rsiVal,
+            ema: emaVal,
+            bb_upper: bbVal ? bbVal.upper : null,
+            bb_lower: bbVal ? bbVal.lower : null,
+            bb_middle: bbVal ? bbVal.middle : null,
+            price_change_1m: previousCandle ? (currentClose - parseFloat(previousCandle.close)) / parseFloat(previousCandle.close) : 0,
+            volume_change_1m: previousCandle ? (currentVolume - parseFloat(previousCandle.volume)) / parseFloat(previousCandle.volume) : 0,
+        };
+        processedData.push(dataPointForAI);
+    });
+    return processedData;
+}
+
+/**
+ * Busca dados históricos via requisição HTTP para um símbolo e tempo gráfico.
+ * Lida com erros (timeout, erro de solicitação) para não quebrar o bot.
+ * @param {string} symbol - O par de trading (ex: 'BTCUSDT').
+ * @param {string} timeframe - O tempo gráfico (ex: '1h').
+ * @returns {Promise<Array<object> | null>} Promessa que resolve para um array de velas processadas com indicadores, ou null em caso de erro.
+ */
+async function getHistoricalData(symbol, timeframe) {
+    if (!binanceClient) {
+        console.error(colors.red, `  [DataHttp] ERRO: Cliente Binance não definido para o módulo DataHttp.`);
+        return null;
+    }
+    try {
+        const limitToFetch = getRequestedLimit(timeframe);
+        console.log(colors.cyan, `  [DataHttp] Buscando ${limitToFetch} velas históricas via HTTP para ${symbol} - [${timeframe}]...`, colors.reset);
+
+        // A requisição HTTP REST da Binance para velas históricas
+        const candles = await binanceClient.futuresCandles({
+            symbol: symbol,
+            interval: timeframe,
+            limit: limitToFetch
+        });
+
+        const processedCandles = processHistoricalCandlesForAI(candles, timeframe);
+        console.log(colors.green, `  [DataHttp] ${processedCandles.length} velas históricas obtidas para ${symbol} - [${timeframe}].`);
+        return processedCandles;
+
+    } catch (error) {
+        // Captura e loga o erro sem relançá-lo, permitindo que o bot continue.
+        console.error(colors.red, `  [DataHttp] ERRO ao buscar dados históricos para ${symbol} - [${timeframe}]:`, `[${error.code || 'S/C'}] ${error.message}`, colors.reset);
+        console.log(colors.yellow, `  [DataHttp] Pulando dados históricos para ${symbol} - [${timeframe}] devido ao erro.`, colors.reset);
+        return null; // Retorna null para indicar falha na coleta para este timeframe/símbolo.
+    }
+}
+
+/**
+ * Define o cliente Binance para este módulo. Deve ser chamado antes de usar getHistoricalData.
+ * @param {object} clientInstance - O cliente Binance API.
+ */
+function setBinanceClient(clientInstance) {
+    binanceClient = clientInstance;
+}
+
+module.exports = {
+    setBinanceClient,
+    getHistoricalData,
+};

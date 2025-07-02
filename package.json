@@ -1,0 +1,30 @@
+{
+  "name": "binance-futures-bot",
+  "version": "1.0.0",
+  "description": "Bot de Trading para Binance Futures com estratégia de Scalping Inteligente",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "binance",
+    "futures",
+    "trading",
+    "bot",
+    "scalping",
+    "rsi",
+    "ema"
+  ],
+  "author": "Trading Bot Developer",
+  "license": "MIT",
+  "dependencies": {
+    "binance-api-node": "^0.12.7",
+    "dotenv": "^16.3.1",
+    "technicalindicators": "^3.1.0",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

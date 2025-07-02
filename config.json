@@ -1,0 +1,21 @@
+{
+    "symbolsToWatch": ["SOLUSDT", "ADAUSDT", "XRPUSDT", "MATICUSDT", "DOTUSDT"],
+    "quoteAsset": "USDT",
+    "interval": "1m",
+
+    "rsiPeriod": 14,
+    "emaPeriod": 200,
+    "macd": {
+        "fastPeriod": 12,
+        "slowPeriod": 26,
+        "signalPeriod": 9
+    },
+    "volumeSmaPeriod": 20,
+
+    "rsiOversold": 30,
+    "rsiOverbought": 75, 
+
+    "tradeAmountPercent": 2, 
+    "stopLossPercent": 1.5,
+    "takeProfitPercent": 3.0
+}

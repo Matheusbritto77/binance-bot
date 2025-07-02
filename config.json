@@ -26,7 +26,7 @@
     ],
     "quoteAsset": "USDT",
     "leverage": 2,
-    "marginPercentPerTrade": 90,
+    "marginPercentPerTrade": 50,
     "takerFeePercent": 0.04,
 
     "strategies": {

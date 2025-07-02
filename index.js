@@ -25,15 +25,12 @@ let exchangeRules = {};
 // =================================================================================================
 
 async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
-    // console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Nova Vela Processada...`);
-
     // A IA deve coletar os dados processados em tempo real (do WebSocket)
     aiModule.collectData(symbol, timeframe, candle, indicators);
 
-    // O websocketService agora já garante que o histórico está pronto para notificar o bot
-    // Então, se o callback é chamado, podemos prosseguir com a estratégia principal.
+    // Se o websocketService já garante que o histórico está pronto, prosseguimos
     if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0]) {
-        console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Vela Principal Processada!`, colors.reset);
+        // console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Vela Principal Processada!`, colors.reset);
         await runMasterStrategy(symbol, timeframe);
     }
 }
@@ -41,16 +38,32 @@ async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
 async function runMasterStrategy(symbol, timeframe) {
     const symbolState = websocketService.getBotState()[symbol];
 
-    // Com o pré-preenchimento, esta checagem deve sempre ser bem-sucedida ao iniciar.
+    // Checagem de histórico suficiente. Esta é crucial para estratégias e IA.
     if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
-        console.log(`  [${symbol}] [${timeframe}] ATENÇÃO: runMasterStrategy chamado com histórico insuficiente APÓS AQUECIMENTO INICIAL. Isso não deveria acontecer.`);
-        return;
+        console.log(colors.gray, `  [${symbol}] [${timeframe}] Histórico insuficiente (${symbolState.data[timeframe].candles?.length || 0}/${websocketService.MIN_CANDLES_FOR_FULL_INDICATORS}) para tomar decisões ou gerenciar. Aguardando.`, colors.reset);
+        return; // Não faz nada se o histórico não estiver pronto
     }
 
+    // Se já houver uma posição aberta para este símbolo, chame manageOpenPosition.
+    // O bot SEMPRE tentará gerenciar posições abertas, independentemente do saldo.
     if (symbolState.position.side !== 'NONE') {
+        console.log(colors.cyan, `  [${symbol}] Gerenciando posição ${symbolState.position.side} ativa.`, colors.reset);
         await manageOpenPosition(symbol);
-        return;
+        return; // Termina aqui se houver uma posição para gerenciar
     }
+
+    // A partir daqui, o bot só tentará abrir NOVAS posições.
+    // Para isso, ele PRECISA ter saldo disponível.
+    // Vamos verificar o saldo AGORA para evitar logs desnecessários de "nenhuma oportunidade"
+    // quando o problema é apenas falta de saldo para abrir.
+    const accountInfo = await client.futuresAccountInfo();
+    const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
+
+    if (usdtBalance < 5.1) { // Mínimo de 5.1 USDT para cobrir o mínimo da Binance (~5 USDT)
+        console.log(colors.yellow, `  [${symbol}] Saldo de ${STRATEGY_CONFIG.quoteAsset} (${usdtBalance.toFixed(2)}) é muito baixo para abrir novas posições. Somente gerenciando.`, colors.reset);
+        return; // Não procura sinais de entrada se o saldo for baixo
+    }
+
 
     const { strategies, aiModule: aiModuleConfig } = STRATEGY_CONFIG;
     let signal = null;
@@ -267,13 +280,14 @@ async function openPosition(symbol, signal) {
     const price = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
 
     try {
+        // Verifica o saldo em tempo real antes de abrir a posição
         const accountInfo = await client.futuresAccountInfo();
         const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === quoteAsset)?.availableBalance || '0');
         const marginToUse = usdtBalance * (marginPercentPerTrade / 100);
 
         if (marginToUse * leverage < 5.1) {
-            console.log(colors.yellow, `  [${symbol}] AVISO: Valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) é muito baixo para operar (mínimo Binance: ~5 USDT).`);
-            return;
+            console.log(colors.yellow, `  [${symbol}] AVISO: Saldo insuficiente (${usdtBalance.toFixed(2)} ${quoteAsset}) ou valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) muito baixo para abrir nova posição (mínimo Binance: ~5 USDT).`);
+            return; // Não prossegue com a ordem se o saldo for baixo
         }
 
         const positionSizeInUsd = marginToUse * leverage;
@@ -334,45 +348,40 @@ async function main() {
             exchangeRules[rule.symbol] = { quantityPrecision: rule.quantityPrecision };
         }
 
-        console.log('Verificando saldo...');
+        console.log('Verificando saldo inicial...');
         const accountInfo = await client.futuresAccountInfo();
         const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
+        
+        // Remove a condição de `return` aqui. O bot avisará, mas continuará.
         if (usdtBalance < 10) {
-            console.log(colors.red, `❌ Saldo de ${STRATEGY_CONFIG.quoteAsset} (${usdtBalance.toFixed(2)}) é muito baixo. Mínimo necessário: 10 USDT.`, colors.reset);
-            return;
+            console.log(colors.red, `❌ ATENÇÃO: Saldo inicial de ${STRATEGY_CONFIG.quoteAsset} (${usdtBalance.toFixed(2)}) é muito baixo. O bot NÃO ABRIRÁ NOVAS POSIÇÕES até que o saldo aumente, mas CONTINUARÁ MONITORANDO e GERENCIANDO POSIÇÕES ATIVAS.`, colors.reset);
+        } else {
+            console.log(colors.green, `✅ Saldo de margem inicial: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
         }
-        console.log(colors.green, `✅ Saldo de margem: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
 
-        // Inicializa o módulo de IA primeiro (carrega modelo, dados e estatísticas)
         console.log('Iniciando módulo de IA...');
         await aiModule.init();
 
-        // NOVO: Busca dados históricos via HTTP para a IA no início E PRE-PREENCHE botState
         console.log('\n[Bot] Buscando dados históricos via HTTP para treinamento inicial da IA e pré-aquecimento das estratégias...');
         dataHttp.setBinanceClient(client);
         
-        // Objeto temporário para acumular os dados históricos que serão passados para o websocketService
         const historicalDataForBotState = {}; 
 
         for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-            historicalDataForBotState[symbol] = { data: {} }; // Inicializa a estrutura para o símbolo
+            historicalDataForBotState[symbol] = { data: {}, position: { side: 'NONE' } }; // Garante posição básica aqui
             for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
                 const historicalData = await dataHttp.getHistoricalData(symbol, timeframe);
                 
-                // Se obteve dados históricos via HTTP, armazena para a IA e para o botState
                 if (historicalData && historicalData.length > 0) {
                     aiModule.collectHistoricalDataFromHttp(symbol, timeframe, historicalData);
-                    // Copia as velas para o botState ANTES de iniciar os WebSockets
                     historicalDataForBotState[symbol].data[timeframe] = {
-                        candles: historicalData, // Usa os candles já processados do dataHttp
-                        indicators: historicalData[historicalData.length - 1], // Últimos indicadores da última vela
-                        lastPrice: historicalData[historicalData.length - 1].close, // Último preço de fechamento
-                        // Marca como pronto pois já tem o histórico via HTTP
-                        isReady: true // Uma nova flag para o websocketService saber que já está pronto
+                        candles: historicalData,
+                        indicators: historicalData[historicalData.length - 1],
+                        lastPrice: historicalData[historicalData.length - 1].close,
+                        isReady: true
                     };
                     console.log(colors.green, `  [Bot] Histórico (${historicalData.length} velas) para ${symbol} - [${timeframe}] PRÉ-AQUECIDO via HTTP.`);
                 } else {
-                    // Se a busca HTTP falhou ou não retornou dados, o timeframe não estará "aquecido" inicialmente
                     console.log(colors.yellow, `  [Bot] Nenhum histórico HTTP para ${symbol} - [${timeframe}]. Ele aquecerá via WebSocket.`, colors.reset);
                     historicalDataForBotState[symbol].data[timeframe] = {
                         candles: [], indicators: {}, lastPrice: 0, isReady: false
@@ -383,9 +392,10 @@ async function main() {
         console.log('[Bot] Coleta de dados históricos HTTP para IA e pré-aquecimento concluída.');
 
 
-        // Inicia o serviço de WebSockets para dados em tempo real, passando os dados pré-aquecidos
         console.log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
-        botState = await websocketService.initialize(client, historicalDataForBotState, onNewCandleProcessed);
+        // Passa o accountInfo inicial para o websocketService para que ele possa preencher as posições abertas
+        // Isso é crucial para o bot gerenciar posições existentes mesmo sem saldo para novas entradas.
+        botState = await websocketService.initialize(client, historicalDataForBotState, onNewCandleProcessed, accountInfo);
 
 
         console.log(colors.yellow, "\nO bot está operando. Pressione CTRL + C para parar.", colors.reset);
@@ -393,8 +403,6 @@ async function main() {
 
         if (STRATEGY_CONFIG.aiModule.enabled) {
             setInterval(async () => {
-                // A IA só deve treinar se houver dados suficientes para TODOS os timeframes configurados
-                // A condição é baseada no aiModule.aiTrainingData (que já tem os dados HTTP + WS)
                 const allTimeframesHaveEnoughDataForAI = STRATEGY_CONFIG.symbolsToWatch.every(symbol =>
                     STRATEGY_CONFIG.timeframesToWatch.every(tf =>
                         aiModule.getCollectedDataCount(symbol, tf) >= aiModule.aiModel.minDataForTraining

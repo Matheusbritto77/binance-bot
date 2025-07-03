@@ -42,8 +42,26 @@ async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
     // A IA deve coletar os dados processados em tempo real (do WebSocket)
     aiModule.collectData(symbol, timeframe, candle, indicators);
 
-    // Roda a estratégia principal apenas para o timeframe principal (o primeiro da lista)
-    // E APENAS se o histórico para este timeframe estiver "aquecido" via WebSocket
+    // Verificar saldo e modo a cada candle
+    await checkBalanceAndSetMode();
+
+    // Se estiver em modo MANAGEMENT_ONLY, mostrar log de gerenciamento
+    if (tradingMode === 'MANAGEMENT_ONLY') {
+        const botState = websocketService.getBotState()[symbol];
+        const position = botState?.position;
+         
+        if (position && position.side !== 'NONE') {
+            const price = botState.data[timeframe]?.lastPrice;
+            const entryPrice = position.entryPrice;
+            const pnl = position.side === 'LONG' ? 
+                ((price - entryPrice) / entryPrice * 100) : 
+                ((entryPrice - price) / entryPrice * 100);
+             
+            log('info', `[GERENCIAMENTO] [${symbol}][${timeframe}] ${position.side} Q:${position.quantity} @${entryPrice} | Preço atual: ${price} | PnL: ${pnl.toFixed(2)}% | Estratégia: ${position.activeStrategy || '-'}`);
+        }
+    }
+
+    // Roda a estratégia principal apenas para o timeframe principal
     const isPrimaryTimeframeWebSocketReady = websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length >= websocketService.MIN_CANDLES_FOR_FULL_INDICATORS;
 
     if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && isPrimaryTimeframeWebSocketReady) {
@@ -655,12 +673,96 @@ async function setLastUpdateTime() {
     }
 }
 
-// ================= USER DATA STREAM (WebSocket Privado) =====================
-let userDataStreamWS = null;
-let userDataListenKey = null;
-let userAccountInfo = null; // Saldo e posições em tempo real
-let userOrders = {}; // Status de ordens em tempo real
+// Adicionar função para obter posições abertas da Binance
+async function getOpenPositionsFromBinance() {
+    try {
+        const positions = await client.futuresPositionRisk();
+        const openPositions = positions.filter(pos => parseFloat(pos.positionAmt) !== 0);
+        
+        log('info', `[BINANCE] Posições abertas encontradas: ${openPositions.length}`);
+        for (const pos of openPositions) {
+            log('info', `[BINANCE] ${pos.symbol}: ${pos.positionAmt} (${pos.positionSide}) @ ${pos.entryPrice} | PnL: ${pos.unRealizedProfit}`);
+        }
+        
+        return openPositions;
+    } catch (error) {
+        log('error', `[BINANCE] Erro ao buscar posições abertas: ${error.message}`);
+        return [];
+    }
+}
 
+// Adicionar função para verificar saldo e entrar em modo MANAGEMENT_ONLY se necessário
+async function checkBalanceAndSetMode() {
+    try {
+        const accountInfo = await client.futuresAccountInfo();
+        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
+        const MIN_INITIAL_BALANCE = 10;
+        
+        if (usdtBalance < MIN_INITIAL_BALANCE && tradingMode !== 'MANAGEMENT_ONLY') {
+            tradingMode = 'MANAGEMENT_ONLY';
+            log('warning', `⚠️ Saldo insuficiente (${usdtBalance.toFixed(2)} USDT). Entrando em modo MANAGEMENT_ONLY automaticamente.`);
+            log('warning', `O bot irá gerenciar apenas posições existentes até o saldo ser restaurado.`);
+            
+            // Reorganizar WebSocket para apenas posições abertas
+            await reorganizeWebSocketForManagement();
+        } else if (usdtBalance >= MIN_INITIAL_BALANCE && tradingMode === 'MANAGEMENT_ONLY') {
+            tradingMode = 'FULL_TRADING';
+            log('success', `✅ Saldo restaurado (${usdtBalance.toFixed(2)} USDT). Voltando ao modo FULL_TRADING.`);
+        }
+        
+        return tradingMode;
+    } catch (error) {
+        log('error', `[BALANCE] Erro ao verificar saldo: ${error.message}`);
+        return tradingMode;
+    }
+}
+
+// Função para reorganizar WebSocket no modo MANAGEMENT_ONLY
+async function reorganizeWebSocketForManagement() {
+    log('info', '[WEBSOCKET] Reorganizando conexões para modo MANAGEMENT_ONLY...');
+    
+    // Obter posições abertas
+    const openPositions = await getOpenPositionsFromBinance();
+    const symbolsWithPositions = openPositions.map(pos => pos.symbol);
+    
+    log('info', `[WEBSOCKET] Posições abertas encontradas: ${symbolsWithPositions.join(', ') || 'Nenhuma'}`);
+    
+    if (symbolsWithPositions.length === 0) {
+        log('warning', '[WEBSOCKET] Nenhuma posição aberta. Desconectando todos os WebSockets de dados.');
+        // Fechar todos os WebSockets de dados
+        if (websocketService.wsConnections) {
+            for (const ws of websocketService.wsConnections) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+            }
+        }
+        return;
+    }
+    
+    // Fechar WebSockets de símbolos sem posição
+    if (websocketService.wsConnections) {
+        for (const ws of websocketService.wsConnections) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const wsStreams = ws.streams || [];
+                const hasPositionSymbol = wsStreams.some(stream => 
+                    symbolsWithPositions.some(symbol => stream.includes(symbol.toLowerCase()))
+                );
+                
+                if (!hasPositionSymbol) {
+                    log('info', `[WEBSOCKET] Fechando WebSocket sem posições abertas (streams: ${wsStreams.join(', ')})`);
+                    ws.close();
+                }
+            }
+        }
+    }
+    
+    // Reabrir WebSockets apenas para símbolos com posição
+    await websocketService.initialize(client, websocketService.getBotState(), onNewCandleProcessed);
+    log('success', `[WEBSOCKET] Reorganização concluída. Monitorando apenas: ${symbolsWithPositions.join(', ')}`);
+}
+
+// Melhorar o User Data Stream para capturar posições
 async function startUserDataStream() {
     // 1. Solicita listenKey
     userDataListenKey = await client.futuresGetDataStream();
@@ -674,13 +776,43 @@ async function startUserDataStream() {
     userDataStreamWS.on('message', (msg) => {
         try {
             const data = JSON.parse(msg);
+            
             if (data.e === 'ACCOUNT_UPDATE') {
-                // Atualização de saldo e posições
-                userAccountInfo = data.a;
-                // Exemplo: saldo USDT
-                const usdt = userAccountInfo.B.find(b => b.a === STRATEGY_CONFIG.quoteAsset);
-                if (usdt) {
-                    log('info', `[UserDataStream] Saldo atualizado: ${usdt.wb} ${STRATEGY_CONFIG.quoteAsset}`);
+                // Atualização de posições
+                if (data.a && data.a.P) {
+                    log('info', `[UserDataStream] Atualização de posições recebida`);
+                    for (const position of data.a.P) {
+                        const symbol = position.s;
+                        const amount = parseFloat(position.pa);
+                        const side = amount > 0 ? 'LONG' : amount < 0 ? 'SHORT' : 'NONE';
+                        
+                        if (side !== 'NONE') {
+                            log('info', `[UserDataStream] Posição aberta: ${symbol} ${side} ${Math.abs(amount)}`);
+                            // Atualizar botState com a posição
+                            if (!websocketService.getBotState()[symbol]) {
+                                websocketService.getBotState()[symbol] = { position: { side: 'NONE' } };
+                            }
+                            websocketService.getBotState()[symbol].position = {
+                                side,
+                                quantity: Math.abs(amount),
+                                // Outros campos serão preenchidos pelo gerenciamento
+                            };
+                        } else {
+                            log('info', `[UserDataStream] Posição fechada: ${symbol}`);
+                            // Marcar posição como fechada
+                            if (websocketService.getBotState()[symbol]) {
+                                websocketService.getBotState()[symbol].position = { side: 'NONE' };
+                            }
+                        }
+                    }
+                }
+                
+                // Atualização de saldo
+                if (data.a && data.a.B) {
+                    const usdt = data.a.B.find(b => b.a === STRATEGY_CONFIG.quoteAsset);
+                    if (usdt) {
+                        log('info', `[UserDataStream] Saldo atualizado: ${usdt.wb} ${STRATEGY_CONFIG.quoteAsset}`);
+                    }
                 }
             } else if (data.e === 'ORDER_TRADE_UPDATE') {
                 // Atualização de ordens/trades
@@ -707,6 +839,34 @@ async function startUserDataStream() {
     }, 30 * 60 * 1000); // 30 minutos
 }
 
+// Função para sincronizar posições no início
+async function syncOpenPositions() {
+    log('info', '[BINANCE] Sincronizando posições abertas...');
+    const openPositions = await getOpenPositionsFromBinance();
+    
+    // Atualizar botState com posições reais
+    for (const pos of openPositions) {
+        const symbol = pos.symbol;
+        const amount = parseFloat(pos.positionAmt);
+        const side = amount > 0 ? 'LONG' : 'SHORT';
+        
+        if (!websocketService.getBotState()[symbol]) {
+            websocketService.getBotState()[symbol] = { position: { side: 'NONE' } };
+        }
+        
+        websocketService.getBotState()[symbol].position = {
+            side,
+            quantity: Math.abs(amount),
+            entryPrice: parseFloat(pos.entryPrice),
+            // Outros campos serão preenchidos pelo gerenciamento
+        };
+        
+        log('info', `[BINANCE] Posição sincronizada: ${symbol} ${side} ${Math.abs(amount)} @ ${pos.entryPrice}`);
+    }
+    
+    return openPositions;
+}
+
 async function main() {
     showHeader(`Bot MTA v5 - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
     try {
@@ -716,6 +876,7 @@ async function main() {
 
         // Inicia o User Data Stream
         await startUserDataStream();
+        await syncOpenPositions();
 
         log('info', 'Buscando regras dos ativos...');
         const exchangeInfo = await client.futuresExchangeInfo();
@@ -922,6 +1083,11 @@ async function main() {
         } else {
             log('warning', "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.");
         }
+
+        // Verificar saldo periodicamente (a cada 5 minutos)
+        setInterval(async () => {
+            await checkBalanceAndSetMode();
+        }, 5 * 60 * 1000);
 
     } catch (error) {
         handleApiError(error);

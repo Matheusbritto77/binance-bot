@@ -6,6 +6,7 @@ const { RSI, EMA, SMA, BollingerBands } = require('technicalindicators');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const log = require('./log');
 
 const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m", gray: "\x1b[37m" };
@@ -45,8 +46,8 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
     botState = initialBotState;
     candleCallbacks.onCandleReceived = onCandleReceived;
 
-    console.log('\n[WebSocketService] Iniciando monitoramento de dados em tempo real via WebSockets...');
-    console.log(colors.yellow, `[WebSocketService] Estratégias e IA usarão histórico pré-carregado + dados em tempo real.\n    Mínimo de velas para indicadores: ${MIN_CANDLES_FOR_FULL_INDICATORS}.`, colors.reset);
+    log('info', '[WebSocketService] Iniciando monitoramento de dados em tempo real via WebSockets...');
+    log('info', `[WebSocketService] Estratégias e IA usarão histórico pré-carregado + dados em tempo real.\n    Mínimo de velas para indicadores: ${MIN_CANDLES_FOR_FULL_INDICATORS}.`);
 
     // Configuração de margem e alavancagem para cada símbolo (continua individual)
     for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
@@ -60,14 +61,14 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
             try {
                 await client.futuresMarginType({ symbol, marginType: 'ISOLATED' });
             } catch (e) {
-                if (e.code !== -4046) console.log(colors.yellow, `  [${symbol}] Aviso: Erro ao definir margem ISOLADA: ${e.message}`);
-                else console.log(colors.yellow, `  [${symbol}] Aviso: Tipo de margem já é ISOLADA.`);
+                if (e.code !== -4046) log('warning', `  [${symbol}] Aviso: Erro ao definir margem ISOLADA: ${e.message}`);
+                else log('warning', `  [${symbol}] Aviso: Tipo de margem já é ISOLADA.`);
             }
             await client.futuresLeverage({ symbol, leverage: STRATEGY_CONFIG.leverage });
-            console.log(colors.cyan, `  [${symbol}] Alavancagem: ${STRATEGY_CONFIG.leverage}x | Margem: ISOLADA.`);
+            log('info', `  [${symbol}] Alavancagem: ${STRATEGY_CONFIG.leverage}x | Margem: ISOLADA.`);
         } catch (symbolError) {
-            console.error(colors.red, `  [${symbol}] FALHA GERAL ao configurar o par:`, `[${symbolError.code || 'S/C'}] ${symbolError.message}`, colors.reset);
-            console.log(colors.yellow, `  [${symbol}] Este par pode não ser totalmente monitorado.`, colors.reset);
+            log('error', `  [${symbol}] FALHA GERAL ao configurar o par:`, `[${symbolError.code || 'S/C'}] ${symbolError.message}`);
+            log('warning', `  [${symbol}] Este par pode não ser totalmente monitorado.`);
         }
     }
 
@@ -80,9 +81,9 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
                     }
                     let isTimeframeAlreadyReady = botState[symbol].data[timeframe].isReady || false;
                     if (isTimeframeAlreadyReady) {
-                console.log(colors.green, `  [${symbol}] [${timeframe}] já está PRÉ-AQUECIDO com ${botState[symbol].data[timeframe].candles.length} velas.`);
+                log('success', `  [${symbol}] [${timeframe}] já está PRÉ-AQUECIDO com ${botState[symbol].data[timeframe].candles.length} velas.`);
                     } else {
-                console.log(colors.yellow, `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`, colors.reset);
+                log('warning', `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`);
                     }
             streams.push(`${symbol.toLowerCase()}@kline_${timeframe}`);
         }
@@ -100,7 +101,7 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
             wsConnections.push(ws);
             ws.on('open', () => {
                 reconnectAttempts = 0;
-                console.log(colors.cyan, `[WebSocketService] WebSocket #${idx + 1} aberto com ${chunk.length} streams.`, colors.reset);
+                log('info', `[WebSocketService] WebSocket #${idx + 1} aberto com ${chunk.length} streams.`);
             });
             ws.on('message', (msg) => {
                 try {
@@ -122,14 +123,14 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
                         handleRealtimeCandle(symbol, timeframe, candle, isTimeframeAlreadyReady);
                     }
                 } catch (err) {
-                    console.error(colors.red, '[WebSocketService] Erro ao processar mensagem WS:', err, colors.reset);
+                    log('error', '[WebSocketService] Erro ao processar mensagem WS:', err);
                 }
             });
             ws.on('error', (err) => {
-                console.error(colors.red, `[WebSocketService] Erro no WebSocket #${idx + 1}:`, err.message, colors.reset);
+                log('error', `[WebSocketService] Erro no WebSocket #${idx + 1}:`, err.message);
             });
             ws.on('close', () => {
-                console.log(colors.yellow, `[WebSocketService] WebSocket #${idx + 1} fechado. Tentando reconectar...`, colors.reset);
+                log('warning', `[WebSocketService] WebSocket #${idx + 1} fechado. Tentando reconectar...`);
                 setTimeout(() => {
                     reconnectAttempts++;
                     connectWS();
@@ -188,7 +189,7 @@ function handleRealtimeCandle(symbol, timeframe, candle, initialReady) {
     if (!symbolData.isReady) { // Só atualiza se ainda não estiver pronto
         symbolData.isReady = symbolData.candles.length >= MIN_CANDLES_FOR_FULL_INDICATORS;
         if (symbolData.isReady && !initialReady) { // Se acabou de ficar pronto via WS e não via HTTP
-            console.log(colors.green, `  [${symbol}] [${timeframe}] Histórico "aquecido" via WebSocket (${symbolData.candles.length} velas).`, colors.reset);
+            log('success', `  [${symbol}] [${timeframe}] Histórico "aquecido" via WebSocket (${symbolData.candles.length} velas).`);
         }
     }
 
@@ -196,7 +197,7 @@ function handleRealtimeCandle(symbol, timeframe, candle, initialReady) {
     if (symbolData.isReady && candleCallbacks.onCandleReceived) {
         candleCallbacks.onCandleReceived(symbol, timeframe, candle, symbolData.indicators);
     } else {
-        console.log(colors.gray, `  [${symbol}] [${timeframe}] Vela final recebida, mas histórico ainda não está PRONTO para operação (${symbolData.candles.length}/${MIN_CANDLES_FOR_FULL_INDICATORS} velas).`, colors.reset);
+        log('debug', `  [${symbol}] [${timeframe}] Vela final recebida, mas histórico ainda não está PRONTO para operação (${symbolData.candles.length}/${MIN_CANDLES_FOR_FULL_INDICATORS} velas).`);
     }
 }
 

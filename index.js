@@ -5,6 +5,7 @@ let Binance = require('binance-api-node').default;
 const { RSI, EMA, MACD, SMA, BollingerBands } = require('technicalindicators');
 const fs = require('fs');
 const path = require('path');
+const log = require('./log');
 
 // Importa os módulos
 let aiModule = require('./aiModule');
@@ -48,7 +49,7 @@ async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
     if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && isPrimaryTimeframeWebSocketReady) {
         await runMasterStrategy(symbol, timeframe);
     } else if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && !isPrimaryTimeframeWebSocketReady) {
-        console.log(colors.gray, `  [${symbol}] [${timeframe}] Histórico via WebSocket insuficiente para tomar decisões (${websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length || 0}/${websocketService.MIN_CANDLES_FOR_FULL_INDICATORS} velas).`, colors.reset);
+        log('warning', `  [${symbol}] [${timeframe}] Histórico via WebSocket insuficiente para tomar decisões (${websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length || 0}/${websocketService.MIN_CANDLES_FOR_FULL_INDICATORS} velas).`);
     }
 }
 
@@ -57,7 +58,7 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
     const symbolState = websocketService.getBotState()[symbol];
 
     if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
-        console.log(colors.yellow, `[DECISÃO] [${symbol}][${timeframe}] Histórico insuficiente para decisão.`, colors.reset);
+        log('warning', `[DECISÃO] [${symbol}][${timeframe}] Histórico insuficiente para decisão.`);
         return;
     }
 
@@ -68,11 +69,7 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
     const confirmationIndicators = symbolState.data[confirmationTF].indicators;
     const price = symbolState.data[triggerTF].lastPrice;
     const currentVolume = symbolState.data[triggerTF].candles[symbolState.data[triggerTF].candles.length - 1]?.volume;
-    console.log(colors.cyan, `[DECISÃO] [${symbol}][${timeframe}] Indicadores:`);
-    console.log(`  Preço atual: ${price}`);
-    console.log(`  RSI: ${triggerIndicators.rsi} | EMA: ${confirmationIndicators.ema} | BB: [${triggerIndicators.bb?.lower}, ${triggerIndicators.bb?.upper}]`);
-    console.log(`  Volume: ${currentVolume} | SMA Volume: ${triggerIndicators.smaVolume}`);
-    console.log(`  Parâmetros Estratégia:`, STRATEGY_CONFIG.strategies);
+    log('info', `[DECISÃO] [${symbol}][${timeframe}] Preço:${price} | RSI:${triggerIndicators.rsi} | EMA:${confirmationIndicators.ema} | BB:[${triggerIndicators.bb?.lower},${triggerIndicators.bb?.upper}] | Vol:${currentVolume} | SMA Vol:${triggerIndicators.smaVolume} | Estratégia:${symbolState.position?.activeStrategy || '-'} | Params:${JSON.stringify(STRATEGY_CONFIG.strategies)}`);
     console.log(colors.reset);
 
     // Always manage open positions, regardless of trading mode
@@ -83,7 +80,7 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
 
     // If in management-only mode and no open position, do not look for new opportunities
     if (tradingMode === 'MANAGEMENT_ONLY') {
-        console.log(colors.gray, `  [${symbol}] Modo de gerenciamento ativo. Não buscando novas oportunidades.`, colors.reset);
+        log('warning', `  [${symbol}] Modo de gerenciamento ativo. Não buscando novas oportunidades.`);
         return;
     }
 
@@ -97,20 +94,20 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
     if (aiModuleConfig.enabled && aiModule.isReadyForTrading()) {
         aiPrediction = await aiModule.predict(symbol, timeframe, symbolState.data[timeframe].candles);
         if (aiPrediction) {
-            console.log(colors.magenta, `[IA] Previsão: ${aiPrediction.action} (confiança: ${aiPrediction.confidence.toFixed(2)}%)`);
+            log('info', `[IA] Previsão: ${aiPrediction.action} (confiança: ${aiPrediction.confidence.toFixed(2)}%)`);
             console.log(`[IA] Features analisadas:`, aiPrediction.features || 'N/A');
             console.log(colors.reset);
         }
         // IA agora é apenas confirmação, não decisão final
         if (aiPrediction && aiPrediction.action !== 'HOLD') {
             aiReasoning = aiPrediction.action;
-            console.log(colors.gray, `  [${symbol}] 🤖 IA como confirmação: ${aiPrediction.action} (${aiPrediction.confidence.toFixed(2)}%)`, colors.reset);
+            log('info', `  [${symbol}] 🤖 IA como confirmação: ${aiPrediction.action} (${aiPrediction.confidence.toFixed(2)}%)`);
         } else if (aiPrediction && aiPrediction.action === 'HOLD') {
-            console.log(colors.gray, `  [${symbol}] 🤖 IA: HOLD (${aiPrediction.confidence.toFixed(2)}%).`, colors.reset);
+            log('info', `  [${symbol}] 🤖 IA: HOLD (${aiPrediction.confidence.toFixed(2)}%).`);
             aiReasoning = 'HOLD';
         }
     } else if (aiModuleConfig.enabled && !aiModule.isReadyForTrading()) {
-        console.log(colors.gray, `  [${symbol}] 🤖 IA ainda em treinamento ou não pronta. Usando apenas estratégias tradicionais.`, colors.reset);
+        log('warning', `  [${symbol}] 🤖 IA ainda em treinamento ou não pronta. Usando apenas estratégias tradicionais.`);
     }
 
     // 2. Estratégias tradicionais são a base da decisão, IA é confirmação
@@ -119,26 +116,26 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
         if (tfSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === tfSignal.side) {
-                console.log(colors.green, `[DECISÃO] SINAL DE TENDÊNCIA + CONFIRMAÇÃO IA: ${tfSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE TENDÊNCIA + CONFIRMAÇÃO IA: ${tfSignal.side}`);
                 signal = tfSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`);
             } 
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
-                console.log(colors.green, `[DECISÃO] SINAL DE TENDÊNCIA (IA não relevante): ${tfSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE TENDÊNCIA (IA não relevante): ${tfSignal.side}`);
                 signal = tfSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`);
             } 
             // Se IA discorda, rejeita o sinal
             else if (aiReasoning && aiReasoning !== tfSignal.side) {
-                console.log(colors.yellow, `[DECISÃO] SINAL DE TENDÊNCIA REJEITADO - IA discorda (${tfSignal.side} vs IA ${aiReasoning}).`, colors.reset);
-                console.log(colors.yellow, `[MOTIVO] Sinal rejeitado: Conflito com IA.`, colors.reset);
+                log('warning', `[DECISÃO] SINAL DE TENDÊNCIA REJEITADO - IA discorda (${tfSignal.side} vs IA ${aiReasoning}).`);
+                log('warning', `[MOTIVO] Sinal rejeitado: Conflito com IA.`);
             }
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
-                console.log(colors.green, `[DECISÃO] SINAL DE TENDÊNCIA (sem IA): ${tfSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE TENDÊNCIA (sem IA): ${tfSignal.side}`);
                 signal = tfSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional.`);
             }
             }
         }
@@ -149,26 +146,26 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
         if (mrSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === mrSignal.side) {
-                console.log(colors.green, `[DECISÃO] SINAL DE REVERSÃO + CONFIRMAÇÃO IA: ${mrSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE REVERSÃO + CONFIRMAÇÃO IA: ${mrSignal.side}`);
                 signal = mrSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`);
             } 
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
-                console.log(colors.green, `[DECISÃO] SINAL DE REVERSÃO (IA não relevante): ${mrSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE REVERSÃO (IA não relevante): ${mrSignal.side}`);
                 signal = mrSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`);
             } 
             // Se IA discorda, rejeita o sinal
             else if (aiReasoning && aiReasoning !== mrSignal.side) {
-                console.log(colors.yellow, `[DECISÃO] SINAL DE REVERSÃO REJEITADO - IA discorda (${mrSignal.side} vs IA ${aiReasoning}).`, colors.reset);
-                console.log(colors.yellow, `[MOTIVO] Sinal rejeitado: Conflito com IA.`, colors.reset);
+                log('warning', `[DECISÃO] SINAL DE REVERSÃO REJEITADO - IA discorda (${mrSignal.side} vs IA ${aiReasoning}).`);
+                log('warning', `[MOTIVO] Sinal rejeitado: Conflito com IA.`);
             }
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
-                console.log(colors.green, `[DECISÃO] SINAL DE REVERSÃO (sem IA): ${mrSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE REVERSÃO (sem IA): ${mrSignal.side}`);
                 signal = mrSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional.`);
             }
             }
         }
@@ -178,26 +175,26 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
         if (boSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === boSignal.side) {
-                console.log(colors.green, `[DECISÃO] SINAL DE ROMPIMENTO + CONFIRMAÇÃO IA: ${boSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE ROMPIMENTO + CONFIRMAÇÃO IA: ${boSignal.side}`);
                 signal = boSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional + confirmação IA.`);
             } 
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
-                console.log(colors.green, `[DECISÃO] SINAL DE ROMPIMENTO (IA não relevante): ${boSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE ROMPIMENTO (IA não relevante): ${boSignal.side}`);
                 signal = boSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`);
             } 
             // Se IA discorda, rejeita o sinal
             else if (aiReasoning && aiReasoning !== boSignal.side) {
-                console.log(colors.yellow, `[DECISÃO] SINAL DE ROMPIMENTO REJEITADO - IA discorda (${boSignal.side} vs IA ${aiReasoning}).`, colors.reset);
-                console.log(colors.yellow, `[MOTIVO] Sinal rejeitado: Conflito com IA.`, colors.reset);
+                log('warning', `[DECISÃO] SINAL DE ROMPIMENTO REJEITADO - IA discorda (${boSignal.side} vs IA ${aiReasoning}).`);
+                log('warning', `[MOTIVO] Sinal rejeitado: Conflito com IA.`);
             }
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
-                console.log(colors.green, `[DECISÃO] SINAL DE ROMPIMENTO (sem IA): ${boSignal.side}`);
+                log('success', `[DECISÃO] SINAL DE ROMPIMENTO (sem IA): ${boSignal.side}`);
                 signal = boSignal;
-                console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
+                log('info', `[MOTIVO] Sinal aceito: Estratégia tradicional.`);
             }
         }
     }
@@ -234,13 +231,13 @@ async function manageOpenPosition(symbol, timeframe) {
         if (!symbolState.position.trailingActive) {
             symbolState.position.trailingActive = true;
             symbolState.position.trailingStopPrice = trailingIndicatorValue;
-            console.log(colors.cyan, `[${symbol}] Trailing stop ativado! Novo stop (indicador): ${trailingIndicatorValue.toFixed(4)}`);
+            log('info', `[${symbol}] Trailing stop ativado! Novo stop (indicador): ${trailingIndicatorValue.toFixed(4)}`);
         } else {
             // Só move o trailing se for mais favorável
             if ((side === 'LONG' && trailingIndicatorValue > symbolState.position.trailingStopPrice) ||
                 (side === 'SHORT' && trailingIndicatorValue < symbolState.position.trailingStopPrice)) {
                 symbolState.position.trailingStopPrice = trailingIndicatorValue;
-                console.log(colors.cyan, `[${symbol}] Trailing stop movido para: ${trailingIndicatorValue.toFixed(4)}`);
+                log('info', `[${symbol}] Trailing stop movido para: ${trailingIndicatorValue.toFixed(4)}`);
             }
         }
         // Se o preço atingir o trailing, fecha a posição
@@ -253,7 +250,7 @@ async function manageOpenPosition(symbol, timeframe) {
     // 2. Fechamento automático ao atingir o tempo máximo
     if (openTime && maxDurationMs && now - openTime >= maxDurationMs) {
         closeReason = 'MAX_DURATION_REACHED';
-        console.log(colors.yellow, `[${symbol}] Tempo máximo da operação atingido (${maxDurationMs / 60000} min). Fechando posição.`);
+        log('warning', `[${symbol}] Tempo máximo da operação atingido (${maxDurationMs / 60000} min). Fechando posição.`);
     }
 
     // 3. Decisão baseada em indicadores ao final do tempo
@@ -273,7 +270,7 @@ async function manageOpenPosition(symbol, timeframe) {
     if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {
         const aiCloseSignal = await aiModule.predictExit(symbol, STRATEGY_CONFIG.timeframesToWatch[0], symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].candles, symbolState.position);
         if (aiCloseSignal && aiCloseSignal.action === 'CLOSE') {
-            console.log(colors.magenta, `  [${symbol}] 🤖 SINAL DE SAÍDA DA IA: ${aiCloseSignal.reason} (${aiCloseSignal.confidence.toFixed(2)}% de confiança)`);
+            log('info', `  [${symbol}] 🤖 SINAL DE SAÍDA DA IA: ${aiCloseSignal.reason} (${aiCloseSignal.confidence.toFixed(2)}% de confiança)`);
             closeReason = 'AI_EXIT_SIGNAL';
         }
     }
@@ -307,11 +304,11 @@ async function manageOpenPosition(symbol, timeframe) {
     }
 
     if (closeReason) {
-        console.log(colors.yellow, `[GERENCIAMENTO] [${symbol}] ${side} Q:${symbolState.position.quantity} @${price} | Estrat:${symbolState.position.activeStrategy} | Motivo:${closeReason} | Ordem:${symbolState.position.stopOrderId || '-'} / ${symbolState.position.takeOrderId || '-'}`);
-        await closePosition(symbol, closeReason);
-    } else {
-        console.log(colors.cyan, `[GERENCIAMENTO] [${symbol}] ${side} Q:${symbolState.position.quantity} @${price} | Estrat:${symbolState.position.activeStrategy} | OK | Ordem:${symbolState.position.stopOrderId || '-'} / ${symbolState.position.takeOrderId || '-'}`);
-    }
+        log('warning', `[GERENCIAMENTO] [${symbol}] ${side} Q:${symbolState.position.quantity} @${price} | Estrat:${symbolState.position.activeStrategy} | Motivo:${closeReason} | Ordem:${symbolState.position.stopOrderId || '-'} / ${symbolState.position.takeOrderId || '-'}`);
+        await closePosition(symbol, closeReason);
+    } else {
+        log('info', `[GERENCIAMENTO] [${symbol}] ${side} Q:${symbolState.position.quantity} @${price} | Estrat:${symbolState.position.activeStrategy} | OK | Ordem:${symbolState.position.stopOrderId || '-'} / ${symbolState.position.takeOrderId || '-'}`);
+    }
 }
 
 // =================================================================================================
@@ -415,7 +412,7 @@ async function openPosition(symbol, signal) {
         const marginToUse = usdtBalance * (marginPercentPerTrade / 100);
 
         if (marginToUse * leverage < 5.1) {
-            console.log(colors.yellow, `  [${symbol}] AVISO: Valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) é muito baixo para operar (mínimo Binance: ~5 USDT).`);
+            log('warning', `  [${symbol}] AVISO: Valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) é muito baixo para operar (mínimo Binance: ~5 USDT).`);
             return;
         }
 
@@ -492,7 +489,7 @@ async function openPosition(symbol, signal) {
             }
         }
 
-        console.log(colors.green, `[OP] [${symbol}] ${positionState.side} Q:${positionState.quantity} @${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | SL:${stopPrice} TP:${takePrice} | Estrat:${positionState.activeStrategy} | Fee:${positionState.entryFee} | Ordem:${order.orderId} SL_ID:${positionState.stopOrderId} TP_ID:${positionState.takeOrderId}`);
+        log('success', `[OP] [${symbol}] ${positionState.side} Q:${positionState.quantity} @${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | SL:${stopPrice} TP:${takePrice} | Estrat:${positionState.activeStrategy} | Fee:${positionState.entryFee} | Ordem:${order.orderId} SL_ID:${positionState.stopOrderId} TP_ID:${positionState.takeOrderId}`);
         console.log(colors.green, `  [${symbol}] STOP LOSS: ${stopPrice} | TAKE PROFIT: ${takePrice}`);
     } catch (error) { handleApiError(error); }
 }
@@ -523,7 +520,7 @@ async function closePosition(symbol, reason) {
             positionState.exitPrice = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
         }
 
-        console.log(colors.yellow, `[FECHAMENTO] [${symbol}] ${positionState.side} Q:${positionState.quantity} @${positionState.exitPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | Estrat:${positionState.activeStrategy} | Motivo:${reason} | Fee:${positionState.exitFee} | Ordem:${order.orderId}`);
+        log('warning', `[FECHAMENTO] [${symbol}] ${positionState.side} Q:${positionState.quantity} @${positionState.exitPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | Estrat:${positionState.activeStrategy} | Motivo:${reason} | Fee:${positionState.exitFee} | Ordem:${order.orderId}`);
 
         websocketService.getBotState()[symbol].position = { side: 'NONE' };
 
@@ -539,7 +536,7 @@ async function allFilesExist(symbols, timeframes) {
                     const historicalData = await database.loadData('historical_data', symbol, timeframe);
                     const rawData = await database.loadData('raw_candles', symbol, timeframe);
                     if (!historicalData || !rawData) {
-                        console.log('📊 [MongoDB] Dados ausentes:', symbol, timeframe);
+                        log('warning', '📊 [MongoDB] Dados ausentes:', symbol, timeframe);
                         return false;
                     }
                 }
@@ -548,12 +545,12 @@ async function allFilesExist(symbols, timeframes) {
             const aiModel = await database.loadData('ai_model');
             const aiStats = await database.loadData('ai_stats');
             if (!aiData || !aiModel || !aiStats) {
-                console.log('📊 [MongoDB] Dados globais ausentes');
+                log('warning', '📊 [MongoDB] Dados globais ausentes');
                 return false;
             }
             return true;
         } catch (error) {
-            console.log('❌ [MongoDB] Erro ao verificar dados:', error.message);
+            log('error', '❌ [MongoDB] Erro ao verificar dados:', error.message);
             return false;
         }
     }
@@ -565,30 +562,30 @@ async function allFilesExist(symbols, timeframes) {
                 const rawFileName = `raw_candles_${symbol}_${timeframe}.json`;
                 const aiFileName = `historical_data_${symbol}_${timeframe}.json`;
                 if (!fs.existsSync(path.join(__dirname, 'raw_candles', rawFileName))) {
-                    console.log('📁 [JSON] Dados ausentes:', rawFileName);
+                    log('warning', '📁 [JSON] Dados ausentes:', rawFileName);
                     return false;
                 }
                 if (!fs.existsSync(path.join(__dirname, 'historical_data', aiFileName))) {
-                    console.log('📁 [JSON] Dados ausentes:', aiFileName);
+                    log('warning', '📁 [JSON] Dados ausentes:', aiFileName);
                     return false;
                 }
             }
         }
         if (!fs.existsSync(path.join(__dirname, 'ai_data', 'ai_data.json'))) {
-            console.log('📁 [JSON] Dados ausentes: ai_data.json');
+            log('warning', '📁 [JSON] Dados ausentes: ai_data.json');
             return false;
         }
         if (!fs.existsSync(path.join(__dirname, 'ai_data', 'ai_model.json'))) {
-            console.log('📁 [JSON] Dados ausentes: ai_model.json');
+            log('warning', '📁 [JSON] Dados ausentes: ai_model.json');
             return false;
         }
         if (!fs.existsSync(path.join(__dirname, 'ai_data', 'ai_stats.json'))) {
-            console.log('📁 [JSON] Dados ausentes: ai_stats.json');
+            log('warning', '📁 [JSON] Dados ausentes: ai_stats.json');
             return false;
         }
         return true;
     } else {
-        console.log('🚫 [FORCE_MONGO_ONLY] Ignorando verificação de arquivos JSON');
+        log('warning', '🚫 [FORCE_MONGO_ONLY] Ignorando verificação de arquivos JSON');
         return false; // Se FORCE_MONGO_ONLY está ativo, sempre retorna false para forçar atualização
     }
 }
@@ -598,11 +595,11 @@ async function getLastUpdateTime() {
         try {
             const updateData = await database.loadData('update_status');
             if (updateData) {
-                console.log('📊 [MongoDB] Status de atualização carregado do MongoDB');
+                log('info', '📊 [MongoDB] Status de atualização carregado do MongoDB');
                 return new Date(updateData.lastUpdate || updateData.last_update);
             }
         } catch (error) {
-            console.log('❌ [MongoDB] Erro ao buscar status:', error.message);
+            log('error', '❌ [MongoDB] Erro ao buscar status:', error.message);
         }
     }
     
@@ -611,11 +608,11 @@ async function getLastUpdateTime() {
         if (!fs.existsSync(UPDATE_STATUS_FILE)) return null;
         try {
             const data = JSON.parse(fs.readFileSync(UPDATE_STATUS_FILE, 'utf-8'));
-            console.log('📁 [JSON] Status de atualização carregado do JSON');
+            log('info', '📁 [JSON] Status de atualização carregado do JSON');
             return data.lastUpdate ? new Date(data.lastUpdate) : null;
         } catch { return null; }
     } else {
-        console.log('🚫 [FORCE_MONGO_ONLY] Ignorando JSON para status de atualização');
+        log('warning', '🚫 [FORCE_MONGO_ONLY] Ignorando JSON para status de atualização');
         return null;
     }
 }
@@ -623,14 +620,14 @@ async function getLastUpdateTime() {
 async function setLastUpdateTime() {
     if (database.isConnected()) {
         await database.saveData('update_status', { lastUpdate: new Date().toISOString() });
-        console.log('📊 [MongoDB] Status de atualização salvo no MongoDB');
+        log('info', '📊 [MongoDB] Status de atualização salvo no MongoDB');
     } else {
         // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
         if (!database.FORCE_MONGO_ONLY) {
             fs.writeFileSync(UPDATE_STATUS_FILE, JSON.stringify({ lastUpdate: new Date().toISOString() }, null, 2));
-            console.log('📁 [JSON] Status de atualização salvo no JSON');
+            log('info', '📁 [JSON] Status de atualização salvo no JSON');
         } else {
-            console.log('🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON para status de atualização');
+            log('warning', '🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON para status de atualização');
         }
     }
 }
@@ -649,7 +646,7 @@ async function startUserDataStream() {
     const wsUrl = `wss://fstream.binance.com/ws/${listenKey}`;
     userDataStreamWS = new (require('ws'))(wsUrl);
     userDataStreamWS.on('open', () => {
-        console.log(colors.cyan, '[UserDataStream] WebSocket privado aberto!', colors.reset);
+        log('info', '[UserDataStream] WebSocket privado aberto!');
     });
     userDataStreamWS.on('message', (msg) => {
         try {
@@ -660,23 +657,23 @@ async function startUserDataStream() {
                 // Exemplo: saldo USDT
                 const usdt = userAccountInfo.B.find(b => b.a === STRATEGY_CONFIG.quoteAsset);
                 if (usdt) {
-                    console.log(colors.green, `[UserDataStream] Saldo atualizado: ${usdt.wb} ${STRATEGY_CONFIG.quoteAsset}`, colors.reset);
+                    log('info', `[UserDataStream] Saldo atualizado: ${usdt.wb} ${STRATEGY_CONFIG.quoteAsset}`);
                 }
             } else if (data.e === 'ORDER_TRADE_UPDATE') {
                 // Atualização de ordens/trades
                 const order = data.o;
                 userOrders[order.s] = order;
-                console.log(colors.magenta, `[UserDataStream] Ordem/Trade: ${order.s} ${order.S} ${order.X} ${order.z} @ ${order.ap}`, colors.reset);
+                log('info', `[UserDataStream] Ordem/Trade: ${order.s} ${order.S} ${order.X} ${order.z} @ ${order.ap}`);
             }
         } catch (err) {
-            console.error(colors.red, '[UserDataStream] Erro ao processar mensagem:', err, colors.reset);
+            log('error', '[UserDataStream] Erro ao processar mensagem:', err);
         }
     });
     userDataStreamWS.on('error', (err) => {
-        console.error(colors.red, '[UserDataStream] Erro no WebSocket:', err.message, colors.reset);
+        log('error', '[UserDataStream] Erro no WebSocket:', err.message);
     });
     userDataStreamWS.on('close', () => {
-        console.log(colors.yellow, '[UserDataStream] WebSocket fechado. Tentando reconectar...', colors.reset);
+        log('warning', '[UserDataStream] WebSocket fechado. Tentando reconectar...');
         setTimeout(startUserDataStream, 10000);
     });
     // 3. Mantém listenKey vivo
@@ -691,32 +688,31 @@ async function main() {
     showHeader(`Bot MTA v5 - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
     try {
         // Inicializa o banco de dados
-        console.log('🔌 Inicializando conexão com MongoDB...');
+        log('info', '🔌 Inicializando conexão com MongoDB...');
         await database.connect();
 
         // Inicia o User Data Stream
         await startUserDataStream();
 
-        console.log('Buscando regras dos ativos...');
+        log('info', 'Buscando regras dos ativos...');
         const exchangeInfo = await client.futuresExchangeInfo();
         for (const rule of exchangeInfo.symbols) {
             exchangeRules[rule.symbol] = { quantityPrecision: rule.quantityPrecision };
         }
 
-        console.log('Verificando saldo inicial...');
+        log('info', 'Verificando saldo inicial...');
         const accountInfo = await client.futuresAccountInfo();
         const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
-        console.log(colors.green, `✅ Saldo de margem disponível: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
+        log('success', `✅ Saldo de margem disponível: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
         const MIN_INITIAL_BALANCE = 10;
         if (usdtBalance < MIN_INITIAL_BALANCE) {
             tradingMode = 'MANAGEMENT_ONLY';
-            console.log(colors.yellow, `\n⚠️ Saldo inicial (${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}) é inferior a ${MIN_INITIAL_BALANCE} ${STRATEGY_CONFIG.quoteAsset}.`);
-            console.log(colors.yellow, `O bot iniciará em modo de GERENCIAMENTO DE POSIÇÕES. Novas operações NÃO serão abertas.`);
-            console.log(colors.yellow, `Se houver posições ativas, elas serão gerenciadas até o fechamento.`);
-            console.log(colors.yellow, `Para habilitar a abertura de novas posições, deposite pelo menos ${MIN_INITIAL_BALANCE} ${STRATEGY_CONFIG.quoteAsset}.`, colors.reset);
+            log('warning', `\n⚠️ Saldo inicial (${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}) é inferior a ${MIN_INITIAL_BALANCE} ${STRATEGY_CONFIG.quoteAsset}.`);
+            log('warning', `O bot iniciará em modo de GERENCIAMENTO DE POSIÇÕES. Novas operações NÃO serão abertas.`);
+            log('warning', `Se houver posições ativas, elas serão gerenciadas até o fechamento.`);
+            log('warning', `Para habilitar a abertura de novas posições, deposite pelo menos ${MIN_INITIAL_BALANCE} ${STRATEGY_CONFIG.quoteAsset}.`);
         } else {
-            tradingMode = 'FULL_TRADING';
-            console.log(colors.green, `Bot iniciando em modo de NEGOCIAÇÃO COMPLETA.`, colors.reset);
+            log('success', `Bot iniciando em modo de NEGOCIAÇÃO COMPLETA.`);
         }
 
         // Lógica de redundância para atualização de dados - SEMPRE PRIORIZA MONGODB
@@ -725,7 +721,7 @@ async function main() {
         
         // Verifica se há dados no MongoDB primeiro
         if (database.isConnected()) {
-            console.log(colors.cyan, '[MONGODB] Verificando dados existentes no MongoDB...', colors.reset);
+            log('info', '[MONGODB] Verificando dados existentes no MongoDB...');
             let totalMongoData = 0;
             
             for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
@@ -735,20 +731,20 @@ async function main() {
                     
                     if (rawData && rawData.length > 0) {
                         totalMongoData += rawData.length;
-                        console.log(colors.green, `📊 [MongoDB] ${rawData.length} velas brutas encontradas para ${symbol} - ${timeframe}`, colors.reset);
+                        log('success', `📊 [MongoDB] ${rawData.length} velas brutas encontradas para ${symbol} - ${timeframe}`);
                     }
                     
                     if (historicalData && historicalData.length > 0) {
-                        console.log(colors.green, `📊 [MongoDB] ${historicalData.length} dados históricos processados encontrados para ${symbol} - ${timeframe}`, colors.reset);
+                        log('success', `📊 [MongoDB] ${historicalData.length} dados históricos processados encontrados para ${symbol} - ${timeframe}`);
                     }
                 }
             }
             
             if (totalMongoData > 0) {
                 mongoDataExists = true;
-                console.log(colors.green, `📊 [MongoDB] Total de ${totalMongoData} velas encontradas no MongoDB`, colors.reset);
+                log('success', `📊 [MongoDB] Total de ${totalMongoData} velas encontradas no MongoDB`);
             } else {
-                console.log(colors.yellow, `📊 [MongoDB] Nenhum dado encontrado no MongoDB. Iniciando ciclo de aquisição...`, colors.reset);
+                log('warning', `📊 [MongoDB] Nenhum dado encontrado no MongoDB. Iniciando ciclo de aquisição...`);
             }
         }
         
@@ -756,40 +752,40 @@ async function main() {
         if (!mongoDataExists) {
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
                 if (!(await allFilesExist(STRATEGY_CONFIG.symbolsToWatch, STRATEGY_CONFIG.timeframesToWatch))) {
-                    console.log(colors.yellow, '[ATUALIZAÇÃO] Dados ausentes no MongoDB e JSON. Será feita atualização completa.', colors.reset);
+                    log('warning', '[ATUALIZAÇÃO] Dados ausentes no MongoDB e JSON. Será feita atualização completa.');
                     needsUpdate = true;
                 } else {
                     const lastUpdate = await getLastUpdateTime();
                     if (!lastUpdate) {
-                        console.log(colors.yellow, '[ATUALIZAÇÃO] Data da última atualização não encontrada. Será feita atualização.', colors.reset);
+                        log('warning', '[ATUALIZAÇÃO] Data da última atualização não encontrada. Será feita atualização.');
                         needsUpdate = true;
                     } else {
                         const hoursSince = (Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60);
                         if (hoursSince >= UPDATE_INTERVAL_HOURS) {
-                            console.log(colors.yellow, `[ATUALIZAÇÃO] Última atualização há ${hoursSince.toFixed(2)} horas. Será feita atualização.`, colors.reset);
+                            log('warning', `[ATUALIZAÇÃO] Última atualização há ${hoursSince.toFixed(2)} horas. Será feita atualização.`);
                             needsUpdate = true;
                         } else {
-                            console.log(colors.green, `[ATUALIZAÇÃO] Dados atualizados há ${hoursSince.toFixed(2)} horas. Não será feita atualização via HTTP.`, colors.reset);
+                            log('success', `[ATUALIZAÇÃO] Dados atualizados há ${hoursSince.toFixed(2)} horas. Não será feita atualização via HTTP.`);
                         }
                     }
                 }
             } else {
-                console.log(colors.yellow, '[ATUALIZAÇÃO] FORCE_MONGO_ONLY ativo - dados ausentes no MongoDB, será feita atualização completa.', colors.reset);
+                log('warning', '[ATUALIZAÇÃO] FORCE_MONGO_ONLY ativo - dados ausentes no MongoDB, será feita atualização completa.');
                 needsUpdate = true;
             }
         } else {
             // Se há dados no MongoDB, verifica se precisa atualizar baseado no tempo
             const lastUpdate = await getLastUpdateTime();
             if (!lastUpdate) {
-                console.log(colors.yellow, '[ATUALIZAÇÃO] Dados no MongoDB mas data da última atualização não encontrada. Será feita atualização.', colors.reset);
+                log('warning', '[ATUALIZAÇÃO] Dados no MongoDB mas data da última atualização não encontrada. Será feita atualização.');
                 needsUpdate = true;
             } else {
                 const hoursSince = (Date.now() - lastUpdate.getTime()) / (1000 * 60 * 60);
                 if (hoursSince >= UPDATE_INTERVAL_HOURS) {
-                    console.log(colors.yellow, `[ATUALIZAÇÃO] Dados no MongoDB mas última atualização há ${hoursSince.toFixed(2)} horas. Será feita atualização.`, colors.reset);
+                    log('warning', `[ATUALIZAÇÃO] Dados no MongoDB mas última atualização há ${hoursSince.toFixed(2)} horas. Será feita atualização.`);
                     needsUpdate = true;
                 } else {
-                    console.log(colors.green, `[ATUALIZAÇÃO] Dados no MongoDB atualizados há ${hoursSince.toFixed(2)} horas. Não será feita atualização via HTTP.`, colors.reset);
+                    log('success', `[ATUALIZAÇÃO] Dados no MongoDB atualizados há ${hoursSince.toFixed(2)} horas. Não será feita atualização via HTTP.`);
                 }
             }
         }
@@ -821,7 +817,7 @@ async function main() {
         }
 
         // Inicializa o módulo de IA
-        console.log('Iniciando módulo de IA...');
+        log('info', 'Iniciando módulo de IA...');
         await aiModule.init();
 
         // Carrega dados históricos processados para IA
@@ -839,7 +835,7 @@ async function main() {
         // Só treina a IA se houve atualização de dados
         if (needsUpdate) {
             // Se precisa atualizar, faz a busca via HTTP, salva e treina IA
-            console.log(colors.yellow, '[ATUALIZAÇÃO] Buscando dados históricos via HTTP para atualização...', colors.reset);
+            log('warning', '[ATUALIZAÇÃO] Buscando dados históricos via HTTP para atualização...');
             dataHttp.setBinanceClient(client);
 
             // Monta array de tarefas para busca em lote
@@ -870,20 +866,20 @@ async function main() {
                 await database.saveDataBatch(saveBatch);
             }
             await setLastUpdateTime();
-            console.log(colors.green, '[ATUALIZAÇÃO] Dados históricos atualizados e data registrada.', colors.reset);
+            log('success', '[ATUALIZAÇÃO] Dados históricos atualizados e data registrada.');
             // Treinamento da IA sempre após garantir dados atualizados
             await aiModule.train();
-            console.log('[Bot] Treinamento da IA concluído.');
+            log('info', '[Bot] Treinamento da IA concluído.');
         } else {
-            console.log(colors.green, '[IA] Dados e modelo já atualizados. Não será feito novo treinamento.', colors.reset);
+            log('success', '[IA] Dados e modelo já atualizados. Não será feito novo treinamento.');
         }
 
         // Inicia o serviço de WebSockets para dados em tempo real
-        console.log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
+        log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
         botState = await websocketService.initialize(client, botState, onNewCandleProcessed);
 
-        console.log(colors.yellow, "\nO bot está operando. Pressione CTRL + C para parar.", colors.reset);
-        console.log(colors.yellow, "A IA começará a treinar periodicamente com os dados coletados.");
+        log('warning', "\nO bot está operando. Pressione CTRL + C para parar.");
+        log('warning', "A IA começará a treinar periodicamente com os dados coletados.");
 
         if (STRATEGY_CONFIG.aiModule.enabled) {
             setInterval(async () => {
@@ -893,15 +889,15 @@ async function main() {
                     )
                 );
                 if (allTimeframesHaveSomeData) {
-                    console.log(colors.yellow, "\nIniciando treinamento da IA...");
+                    log('warning', "\nIniciando treinamento da IA...");
                     await aiModule.train();
-                    console.log(colors.yellow, "Treinamento da IA concluído.");
+                    log('warning', "Treinamento da IA concluído.");
                 } else {
-                    console.log(colors.gray, "🤖 IA: Histórico insuficiente em um ou mais timeframes para iniciar o treinamento.", colors.reset);
+                    log('info', "🤖 IA: Histórico insuficiente em um ou mais timeframes para iniciar o treinamento.");
                 }
             }, STRATEGY_CONFIG.aiModule.trainingIntervalMs || 3600000);
         } else {
-            console.log(colors.yellow, "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.", colors.reset);
+            log('warning', "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.");
         }
 
     } catch (error) {
@@ -912,22 +908,22 @@ async function main() {
     }
 }
 
-function showHeader(title) { console.clear(); console.log(colors.cyan, `================== ${title} ==================\n`, colors.reset); }
+function showHeader(title) { console.clear(); log('info', `================== ${title} ==================\n`); }
 function handleApiError(error) {
     // Se a API retornar uma mensagem informativa, mostre-a de forma destacada
     if (error && error.body) {
         try {
             const apiMsg = typeof error.body === 'string' ? JSON.parse(error.body) : error.body;
             if (apiMsg && apiMsg.msg) {
-                console.log(colors.yellow, `\n[INFO API] ${apiMsg.msg}`, colors.reset);
+                log('info', `\n[INFO API] ${apiMsg.msg}`);
                 return;
             }
         } catch (e) { /* Se não for JSON, ignora */ }
     }
     // Fallback para o log padrão
-    console.error(colors.red, '\n[INFO API]', `[${error.code || 'S/C'}] ${error.message}`, colors.reset);
+    log('error', '\n[INFO API]', `[${error.code || 'S/C'}] ${error.message}`);
 }
-function gracefulShutdown() { console.log(colors.yellow, "\nEncerrando bot..."); process.exit(0); }
+function gracefulShutdown() { log('warning', "\nEncerrando bot..."); process.exit(0); }
 
 process.on('SIGINT', gracefulShutdown);
 

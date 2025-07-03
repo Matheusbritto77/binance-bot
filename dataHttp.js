@@ -5,6 +5,7 @@ const Binance = require('binance-api-node').default; // Cliente Binance para req
 const { RSI, EMA, SMA, BollingerBands } = require('technicalindicators'); // Para calcular indicadores em dados históricos
 const fs = require('fs');
 const path = require('path');
+const log = require('./log');
 
 const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m" };
@@ -88,12 +89,12 @@ function processHistoricalCandlesForAI(candles, timeframe) {
  */
 async function getHistoricalData(symbol, timeframe) {
     if (!binanceClient) {
-        console.error(colors.red, `  [DataHttp] ERRO: Cliente Binance não definido para o módulo DataHttp.`);
+        log('error', `[DataHttp] ERRO: Cliente Binance não definido para o módulo DataHttp.`);
         return null;
     }
     try {
         const limitToFetch = getRequestedLimit(timeframe);
-        console.log(colors.cyan, `  [DataHttp] Buscando ${limitToFetch} velas históricas via HTTP para ${symbol} - [${timeframe}]...`, colors.reset);
+        log('info', `[DataHttp] Buscando ${limitToFetch} velas históricas via HTTP para ${symbol} - [${timeframe}]...`);
 
         // A requisição HTTP REST da Binance para velas históricas
         const candles = await binanceClient.futuresCandles({
@@ -111,7 +112,7 @@ async function getHistoricalData(symbol, timeframe) {
         const loadedRaw = await database.loadData(rawDataKey);
         if (loadedRaw) {
             existingRaw = loadedRaw;
-            console.log(colors.yellow, `  [DataHttp] Velas brutas carregadas do MongoDB para ${symbol} - ${timeframe}.`, colors.reset);
+            log('info', `[DataHttp] Velas brutas carregadas do MongoDB para ${symbol} - ${timeframe}.`);
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
@@ -121,10 +122,10 @@ async function getHistoricalData(symbol, timeframe) {
                 const rawFilePath = path.join(rawDir, rawFileName);
                 if (fs.existsSync(rawFilePath)) {
                     existingRaw = JSON.parse(fs.readFileSync(rawFilePath, 'utf-8'));
-                    console.log(colors.yellow, `  [DataHttp] Velas brutas carregadas do JSON (fallback) para ${symbol} - ${timeframe}.`, colors.reset);
+                    log('info', `[DataHttp] Velas brutas carregadas do JSON (fallback) para ${symbol} - ${timeframe}.`);
                 }
             } else {
-                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`, colors.reset);
+                log('info', `[DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`);
             }
         }
         
@@ -135,7 +136,7 @@ async function getHistoricalData(symbol, timeframe) {
         // Tenta salvar no banco primeiro
         const rawSaved = await database.saveData(rawDataKey, mergedRaw);
         if (rawSaved) {
-            console.log(colors.yellow, `  [DataHttp] Velas brutas salvas no MongoDB. (${newRaw.length} novas)`, colors.reset);
+            log('info', `[DataHttp] Velas brutas salvas no MongoDB. (${newRaw.length} novas)`);
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
@@ -145,12 +146,12 @@ async function getHistoricalData(symbol, timeframe) {
                 const rawFilePath = path.join(rawDir, rawFileName);
                 try {
                     fs.writeFileSync(rawFilePath, JSON.stringify(mergedRaw, null, 2));
-                    console.log(colors.yellow, `  [DataHttp] Velas brutas salvas no JSON (fallback). (${newRaw.length} novas)`, colors.reset);
+                    log('info', `[DataHttp] Velas brutas salvas no JSON (fallback). (${newRaw.length} novas)`);
                 } catch (err) {
-                    console.error(colors.red, `  [DataHttp] ERRO ao salvar velas brutas:`, err, colors.reset);
+                    log('error', `[DataHttp] ERRO ao salvar velas brutas:`, err);
                 }
             } else {
-                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`, colors.reset);
+                log('info', `[DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`);
             }
         }
 
@@ -163,7 +164,7 @@ async function getHistoricalData(symbol, timeframe) {
         const loadedAI = await database.loadData(aiDataKey);
         if (loadedAI) {
             existingAI = loadedAI;
-            console.log(colors.yellow, `  [DataHttp] Dados históricos para IA carregados do MongoDB para ${symbol} - ${timeframe}.`, colors.reset);
+            log('info', `[DataHttp] Dados históricos para IA carregados do MongoDB para ${symbol} - ${timeframe}.`);
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
@@ -173,10 +174,10 @@ async function getHistoricalData(symbol, timeframe) {
                 const aiFilePath = path.join(aiDir, aiFileName);
                 if (fs.existsSync(aiFilePath)) {
                     existingAI = JSON.parse(fs.readFileSync(aiFilePath, 'utf-8'));
-                    console.log(colors.yellow, `  [DataHttp] Dados históricos para IA carregados do JSON (fallback) para ${symbol} - ${timeframe}.`, colors.reset);
+                    log('info', `[DataHttp] Dados históricos para IA carregados do JSON (fallback) para ${symbol} - ${timeframe}.`);
                 }
             } else {
-                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`, colors.reset);
+                log('info', `[DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`);
             }
         }
         
@@ -187,7 +188,7 @@ async function getHistoricalData(symbol, timeframe) {
         // Tenta salvar no banco primeiro
         const aiSaved = await database.saveData(aiDataKey, mergedAI);
         if (aiSaved) {
-            console.log(colors.yellow, `  [DataHttp] Dados históricos para IA salvos no MongoDB. (${newAI.length} novos)`, colors.reset);
+            log('info', `[DataHttp] Dados históricos para IA salvos no MongoDB. (${newAI.length} novos)`);
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
@@ -197,12 +198,12 @@ async function getHistoricalData(symbol, timeframe) {
                 const aiFilePath = path.join(aiDir, aiFileName);
                 try {
                     fs.writeFileSync(aiFilePath, JSON.stringify(mergedAI, null, 2));
-                    console.log(colors.yellow, `  [DataHttp] Dados históricos para IA salvos no JSON (fallback). (${newAI.length} novos)`, colors.reset);
+                    log('info', `[DataHttp] Dados históricos para IA salvos no JSON (fallback). (${newAI.length} novos)`);
                 } catch (err) {
-                    console.error(colors.red, `  [DataHttp] ERRO ao salvar dados históricos:`, err, colors.reset);
+                    log('error', `[DataHttp] ERRO ao salvar dados históricos:`, err);
                 }
             } else {
-                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`, colors.reset);
+                log('info', `[DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`);
             }
         }
 
@@ -210,8 +211,8 @@ async function getHistoricalData(symbol, timeframe) {
 
     } catch (error) {
         // Captura e loga o erro sem relançá-lo, permitindo que o bot continue.
-        console.error(colors.red, `  [DataHttp] ERRO ao buscar dados históricos para ${symbol} - [${timeframe}]:`, `[${error.code || 'S/C'}] ${error.message}`, colors.reset);
-        console.log(colors.yellow, `  [DataHttp] Pulando dados históricos para ${symbol} - [${timeframe}] devido ao erro.`, colors.reset);
+        log('error', `[DataHttp] ERRO ao buscar dados históricos para ${symbol} - [${timeframe}]:`, `[${error.code || 'S/C'}] ${error.message}`);
+        log('info', `[DataHttp] Pulando dados históricos para ${symbol} - [${timeframe}] devido ao erro.`);
         return null; // Retorna null para indicar falha na coleta para este timeframe/símbolo.
     }
 }

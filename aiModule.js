@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { RSI, EMA, BollingerBands, SMA } = require('technicalindicators');
+const log = require('./log');
 
 // Caminhos para os arquivos JSON (na raiz do projeto)
 const AI_DATA_DIR = path.resolve(__dirname, 'ai_data');
@@ -146,38 +147,38 @@ async function init() {
         const loadedData = await database.loadData('ai_data');
         if (loadedData) {
             aiTrainingData = loadedData;
-            console.log('🤖 Módulo de IA: Dados de treinamento carregados do MongoDB.');
+            log('info', '🤖 Módulo de IA: Dados de treinamento carregados do MongoDB.');
             let totalLoaded = 0;
             for (const sym in aiTrainingData) {
                 for (const tf in aiTrainingData[sym]) {
                     totalLoaded += aiTrainingData[sym][tf].length;
                 }
             }
-            console.log(`🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados do MongoDB.`);
+            log('info', `🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados do MongoDB.`);
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             const database = require('./database');
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
                 if (!fs.existsSync(AI_DB_FILE)) {
                     fs.writeFileSync(AI_DB_FILE, JSON.stringify({}, null, 2));
-                    console.log('🤖 Módulo de IA: ai_data.json criado vazio.');
+                    log('info', '🤖 Módulo de IA: ai_data.json criado vazio.');
                 }
                 if (fs.existsSync(AI_DB_FILE)) {
                     aiTrainingData = JSON.parse(fs.readFileSync(AI_DB_FILE, 'utf-8'));
-                    console.log('🤖 Módulo de IA: Dados de treinamento carregados do JSON (fallback).');
+                    log('info', '🤖 Módulo de IA: Dados de treinamento carregados do JSON (fallback).');
                     let totalLoaded = 0;
                     for (const sym in aiTrainingData) {
                         for (const tf in aiTrainingData[sym]) {
                             totalLoaded += aiTrainingData[sym][tf].length;
                         }
                     }
-                    console.log(`🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados de ai_data.json.`);
+                    log('info', `🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados de ai_data.json.`);
         } else {
-            console.log('🤖 Módulo de IA: Banco de dados de IA não encontrado, iniciando com dados vazios.');
+            log('warning', '🤖 Módulo de IA: Banco de dados de IA não encontrado, iniciando com dados vazios.');
             aiTrainingData = {};
                 }
             } else {
-                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com dados vazios.');
+                log('warning', '🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com dados vazios.');
                 aiTrainingData = {};
             }
         }
@@ -186,26 +187,26 @@ async function init() {
         const loadedModel = await database.loadData('ai_model');
         if (loadedModel) {
             aiModel = { ...aiModel, ...loadedModel };
-            console.log('🤖 Módulo de IA: Modelo de IA carregado do MongoDB.');
+            log('info', '🤖 Módulo de IA: Modelo de IA carregado do MongoDB.');
             isAIReadyForTrading = true;
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
                 if (!fs.existsSync(AI_MODEL_FILE)) {
                     fs.writeFileSync(AI_MODEL_FILE, JSON.stringify(aiModel, null, 2));
-                    console.log('🤖 Módulo de IA: ai_model.json criado com modelo padrão.');
+                    log('info', '🤖 Módulo de IA: ai_model.json criado com modelo padrão.');
                 }
                 if (fs.existsSync(AI_MODEL_FILE)) {
                     const loadedModelJson = JSON.parse(fs.readFileSync(AI_MODEL_FILE, 'utf-8'));
                     aiModel = { ...aiModel, ...loadedModelJson };
-                    console.log('🤖 Módulo de IA: Modelo de IA carregado do JSON (fallback).');
+                    log('info', '🤖 Módulo de IA: Modelo de IA carregado do JSON (fallback).');
                     isAIReadyForTrading = true;
         } else {
-            console.log('🤖 Módulo de IA: Modelo de IA não encontrado, iniciando com pesos padrão (NÃO PRONTA para trading).');
+            log('warning', '🤖 Módulo de IA: Modelo de IA não encontrado, iniciando com pesos padrão (NÃO PRONTA para trading).');
             isAIReadyForTrading = false;
         }
             } else {
-                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com modelo padrão (NÃO PRONTA para trading).');
+                log('warning', '🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com modelo padrão (NÃO PRONTA para trading).');
                 isAIReadyForTrading = false;
             }
         }
@@ -214,29 +215,29 @@ async function init() {
         const loadedStats = await database.loadData('ai_stats');
         if (loadedStats) {
             dataStatsByPair = loadedStats;
-            console.log('🤖 Módulo de IA: Estatísticas de normalização carregadas do MongoDB.');
+            log('info', '🤖 Módulo de IA: Estatísticas de normalização carregadas do MongoDB.');
         } else {
             // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
             if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
                 if (!fs.existsSync(AI_STATS_FILE)) {
                     fs.writeFileSync(AI_STATS_FILE, JSON.stringify({}, null, 2));
-                    console.log('🤖 Módulo de IA: ai_stats.json criado vazio.');
+                    log('info', '🤖 Módulo de IA: ai_stats.json criado vazio.');
                 }
                 if (fs.existsSync(AI_STATS_FILE)) {
                     dataStatsByPair = JSON.parse(fs.readFileSync(AI_STATS_FILE, 'utf-8'));
-                    console.log('🤖 Módulo de IA: Estatísticas de normalização carregadas do JSON (fallback).');
+                    log('info', '🤖 Módulo de IA: Estatísticas de normalização carregadas do JSON (fallback).');
         } else {
-            console.log('🤖 Módulo de IA: Estatísticas de normalização não encontradas.');
+            log('warning', '🤖 Módulo de IA: Estatísticas de normalização não encontradas.');
                     dataStatsByPair = {};
                 }
             } else {
-                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com estatísticas vazias.');
+                log('warning', '🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com estatísticas vazias.');
                 dataStatsByPair = {};
             }
         }
 
     } catch (error) {
-        console.error('🤖 Módulo de IA: Erro ao carregar dados/modelo/estatísticas:', error);
+        log('error', '🤖 Módulo de IA: Erro ao carregar dados/modelo/estatísticas:', error);
         aiTrainingData = {};
         aiModel.weights = Object.fromEntries(Object.keys(aiModel.weights).map(key => [key, 0.0]));
         aiModel.bias = 0.0;
@@ -274,7 +275,7 @@ function collectData(symbol, timeframe, candle, indicators) {
     // Adiciona o ponto de dados ao histórico de treinamento
     const wasAdded = addDataPoint(symbol, timeframe, dataPoint);
     if (wasAdded) {
-        console.log(`🤖 Módulo de IA: Existiam ${aiTrainingData[symbol][timeframe].length - 1} pontos, adicionados 1 novos, total agora ${aiTrainingData[symbol][timeframe].length} para ${symbol} - ${timeframe}.`);
+        log('info', `🤖 Módulo de IA: Existiam ${aiTrainingData[symbol][timeframe].length - 1} pontos, adicionados 1 novos, total agora ${aiTrainingData[symbol][timeframe].length} para ${symbol} - ${timeframe}.`);
     }
 }
 
@@ -283,7 +284,7 @@ function collectData(symbol, timeframe, candle, indicators) {
  * Este processo é executado periodicamente para manter o modelo atualizado.
  */
 async function train() {
-    console.log('🤖 Módulo de IA: Iniciando processo de treinamento...');
+    log('info', '🤖 Módulo de IA: Iniciando processo de treinamento...');
 
     // Verifica se há dados suficientes para treinar
     let totalDataPoints = 0;
@@ -294,26 +295,26 @@ async function train() {
     }
 
     if (totalDataPoints < aiModel.minDataForTraining) {
-        console.log(`🤖 Módulo de IA: Dados insuficientes para treinamento (${totalDataPoints}/${aiModel.minDataForTraining} pontos mínimos).`);
+        log('warning', `🤖 Módulo de IA: Dados insuficientes para treinamento (${totalDataPoints}/${aiModel.minDataForTraining} pontos mínimos).`);
         return;
     }
 
     // Calcula estatísticas de normalização para cada par/timeframe
-    console.log('🤖 Módulo de IA: Calculando estatísticas de normalização...');
+    log('info', '🤖 Módulo de IA: Calculando estatísticas de normalização...');
     for (const symbol in aiTrainingData) {
         if (!dataStatsByPair[symbol]) dataStatsByPair[symbol] = {};
         for (const timeframe in aiTrainingData[symbol]) {
             const data = aiTrainingData[symbol][timeframe];
             if (data.length > 0) {
                 dataStatsByPair[symbol][timeframe] = calculateDataStatsForSet(data);
-                console.log(`🤖 Módulo de IA: ${data.length} pontos novos desde o último treinamento para ${symbol} - ${timeframe}.`);
+                log('info', `🤖 Módulo de IA: ${data.length} pontos novos desde o último treinamento para ${symbol} - ${timeframe}.`);
             }
         }
     }
-    console.log('🤖 Módulo de IA: Estatísticas de normalização atualizadas por par/timeframe.');
+    log('info', '🤖 Módulo de IA: Estatísticas de normalização atualizadas por par/timeframe.');
 
     // Treina o modelo usando todos os dados disponíveis
-    console.log('🤖 Módulo de IA: Treinando modelo...');
+    log('info', '🤖 Módulo de IA: Treinando modelo...');
     let totalOverallLoss = 0;
     let totalTrainingSamples = 0;
 
@@ -380,7 +381,7 @@ async function train() {
                 totalTrainingSamples += trainingSet.length;
         }
     }
-    console.log(`🤖 Módulo de IA: Modelo global treinado para todos os pares/timeframes.`);
+    log('info', `🤖 Módulo de IA: Modelo global treinado para todos os pares/timeframes.`);
 
     try {
         // Salva no banco de dados primeiro, com fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
@@ -390,27 +391,27 @@ async function train() {
         const modelSaved = await database.saveData('ai_model', aiModel);
         if (!modelSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
         fs.writeFileSync(AI_MODEL_FILE, JSON.stringify(aiModel, null, 2));
-            console.log('🤖 Módulo de IA: Modelo salvo no JSON (fallback).');
+            log('info', '🤖 Módulo de IA: Modelo salvo no JSON (fallback).');
         }
         
         // Salva dados de treinamento
         const dataSaved = await database.saveData('ai_data', aiTrainingData);
         if (!dataSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
             fs.writeFileSync(AI_DB_FILE, JSON.stringify(aiTrainingData, null, 2));
-            console.log('🤖 Módulo de IA: Dados salvos no JSON (fallback).');
+            log('info', '🤖 Módulo de IA: Dados salvos no JSON (fallback).');
         }
         
         // Salva estatísticas
         const statsSaved = await database.saveData('ai_stats', dataStatsByPair);
         if (!statsSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
             fs.writeFileSync(AI_STATS_FILE, JSON.stringify(dataStatsByPair, null, 2));
-            console.log('🤖 Módulo de IA: Estatísticas salvas no JSON (fallback).');
+            log('info', '🤖 Módulo de IA: Estatísticas salvas no JSON (fallback).');
         }
         
-        console.log('🤖 Módulo de IA: Modelo, dados e estatísticas salvos.');
+        log('info', '🤖 Módulo de IA: Modelo, dados e estatísticas salvos.');
         isAIReadyForTrading = true; // IA está treinada e pronta!
     } catch (error) {
-        console.error('🤖 Módulo de IA: Erro ao salvar modelo/dados/estatísticas de treinamento:', error);
+        log('error', '🤖 Módulo de IA: Erro ao salvar modelo/dados/estatísticas de treinamento:', error);
         isAIReadyForTrading = false; // Falha ao salvar, IA não está pronta
     }
 }
@@ -567,7 +568,7 @@ function getCollectedDataCount(symbol, timeframe) {
  */
 function collectHistoricalDataFromHttp(symbol, timeframe, historicalProcessedData) {
     if (!historicalProcessedData || !Array.isArray(historicalProcessedData)) {
-        console.log(`🤖 Módulo de IA: Dados históricos inválidos para ${symbol} - ${timeframe}`);
+        log('warning', `🤖 Módulo de IA: Dados históricos inválidos para ${symbol} - ${timeframe}`);
         return;
     }
 
@@ -579,7 +580,7 @@ function collectHistoricalDataFromHttp(symbol, timeframe, historicalProcessedDat
     }
 
     if (addedCount > 0) {
-        console.log(`🤖 Módulo de IA: Adicionados ${addedCount} pontos históricos para ${symbol} - ${timeframe}.`);
+        log('info', `🤖 Módulo de IA: Adicionados ${addedCount} pontos históricos para ${symbol} - ${timeframe}.`);
     }
 }
 

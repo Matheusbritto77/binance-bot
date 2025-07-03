@@ -1,6 +1,7 @@
 const { MongoClient } = require('mongodb');
 const fs = require('fs');
 const path = require('path');
+const log = require('./log');
 
 const MONGO_URL = 'mongodb://mongo:mogo@168.231.95.211:27017';
 const DB_NAME = 'binance_bot';
@@ -16,13 +17,13 @@ async function connect() {
         client = new MongoClient(MONGO_URL);
         await client.connect();
         db = client.db(DB_NAME);
-        console.log('✅ Conectado ao MongoDB');
+        log('success', '✅ Conectado ao MongoDB');
         if (FORCE_MONGO_ONLY) {
-            console.log('🚫 [FORCE_MONGO_ONLY] Modo exclusivo MongoDB ativado - JSON será ignorado');
+            log('warning', '🚫 [FORCE_MONGO_ONLY] Modo exclusivo MongoDB ativado - JSON será ignorado');
         }
         return true;
     } catch (err) {
-        console.log('❌ Falha ao conectar ao MongoDB:', err.message);
+        log('error', '❌ Falha ao conectar ao MongoDB:', err.message);
         db = null;
         return false;
     }
@@ -75,13 +76,13 @@ async function loadData(collection, symbol = null, timeframe = null, query = {})
             }
             const data = await db.collection('bot_data').findOne(mongoQuery);
             if (data && data.data !== undefined) {
-                console.log(`📊 [MongoDB] Carregado de ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
+                log('info', `📊 [MongoDB] Carregado de ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
                 return data.data;
             } else {
-                console.log(`📊 [MongoDB] Dados não encontrados para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
+                log('info', `📊 [MongoDB] Dados não encontrados para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
             }
         } catch (err) {
-            console.log('❌ Erro ao buscar no MongoDB:', err.message);
+            log('error', '❌ Erro ao buscar no MongoDB:', err.message);
         }
     }
     
@@ -89,12 +90,12 @@ async function loadData(collection, symbol = null, timeframe = null, query = {})
     if (!FORCE_MONGO_ONLY || !db) {
         const file = getJsonFilePath(collection, symbol, timeframe);
         if (fs.existsSync(file)) {
-            console.log(`📁 [JSON] Carregado de ${file}`);
+            log('info', `📁 [JSON] Carregado de ${file}`);
             return JSON.parse(fs.readFileSync(file, 'utf-8'));
         }
-        console.log(`📁 [JSON] Arquivo não encontrado: ${file}`);
+        log('info', `📁 [JSON] Arquivo não encontrado: ${file}`);
     } else {
-        console.log(`🚫 [FORCE_MONGO_ONLY] Ignorando JSON para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
+        log('warning', `🚫 [FORCE_MONGO_ONLY] Ignorando JSON para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
     }
     return null;
 }
@@ -115,10 +116,10 @@ async function saveData(collection, data, symbol = null, timeframe = null, query
                 { $set: { data, updatedAt: new Date() } },
                 { upsert: true }
             );
-            console.log(`📊 [MongoDB] Salvo em ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
+            log('success', `📊 [MongoDB] Salvo em ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
             return true;
         } catch (err) {
-            console.log('❌ Erro ao salvar no MongoDB:', err.message);
+            log('error', '❌ Erro ao salvar no MongoDB:', err.message);
         }
     }
     
@@ -130,14 +131,14 @@ async function saveData(collection, data, symbol = null, timeframe = null, query
             const dir = path.dirname(file);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(file, JSON.stringify(data, null, 2));
-            console.log(`📁 [JSON] Salvo em ${file}`);
+            log('success', `📁 [JSON] Salvo em ${file}`);
             return true;
         } catch (err) {
-            console.log('❌ Erro ao salvar JSON:', err.message);
+            log('error', '❌ Erro ao salvar JSON:', err.message);
             return false;
         }
     } else {
-        console.log(`🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
+        log('warning', `🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON para ${collection}${symbol ? ` (${symbol}-${timeframe})` : ''}`);
         return false;
     }
 }
@@ -166,10 +167,10 @@ async function saveDataBatch(batchArray) {
                 };
             });
             await db.collection('bot_data').bulkWrite(operations);
-            console.log(`📊 [MongoDB] Salvo em lote (${batchArray.length} documentos)`);
+            log('success', `📊 [MongoDB] Salvo em lote (${batchArray.length} documentos)`);
             return true;
         } catch (err) {
-            console.log('❌ Erro ao salvar em lote no MongoDB:', err.message);
+            log('error', '❌ Erro ao salvar em lote no MongoDB:', err.message);
         }
     }
     // Fallback para JSON: salva cada item individualmente
@@ -181,15 +182,15 @@ async function saveDataBatch(batchArray) {
                 const dir = path.dirname(file);
                 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                 fs.writeFileSync(file, JSON.stringify(item.data, null, 2));
-                console.log(`📁 [JSON] Salvo em ${file}`);
+                log('success', `📁 [JSON] Salvo em ${file}`);
             } catch (err) {
-                console.log('❌ Erro ao salvar JSON:', err.message);
+                log('error', '❌ Erro ao salvar JSON:', err.message);
                 allOk = false;
             }
         }
         return allOk;
     } else {
-        console.log('🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON em lote');
+        log('warning', '🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON em lote');
         return false;
     }
 }

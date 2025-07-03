@@ -45,7 +45,7 @@ function chunkArray(array, size) {
 async function initialize(binanceClient, initialBotState, onCandleReceived) {
     client = binanceClient;
     botState = initialBotState;
-    candleCallbacks.onCandleReceived = onCandleReceived;
+    candleCallbacks.onCandleReceived = onCandleReceivedWrapper;
 
     log('info', '[WebSocketService] Iniciando monitoramento de dados em tempo real via WebSockets...');
     log('info', `[WebSocketService] Estratégias e IA usarão histórico pré-carregado + dados em tempo real.\n    Mínimo de velas para indicadores: ${MIN_CANDLES_FOR_FULL_INDICATORS}.`);
@@ -224,21 +224,18 @@ function getBotState() {
 
 // Função para desinscrever stream de um símbolo
 function unsubscribeSymbolStream(symbol) {
-  // Procure o WebSocket correspondente e feche/desinscreva
-  // (Aqui depende da sua implementação de ws, mas pode ser algo como ws.close() ou ws.terminate())
-  // Exemplo genérico:
-  if (Array.isArray(wsConnections)) { // Assuming wsConnections is the array of WebSocket instances
-    for (const ws of wsConnections) {
-      if (ws && ws.readyState === WebSocket.OPEN) { // Check if the WebSocket is open
-        // This part needs to be adapted to your specific WebSocket handling.
-        // For example, if you have a map of symbol to WebSocket, you'd do:
-        // if (wsClients.has(symbol)) {
-        //   wsClients.get(symbol).close();
-        //   log('info', `[WEBSOCKET] WebSocket fechado para ${symbol}`);
-        // }
-        log('info', `[WebSocketService] Tentando fechar WebSocket para ${symbol} (readyState: ${ws.readyState})`);
-        ws.close();
-        log('info', `[WEBSOCKET] WebSocket fechado para ${symbol}`);
+  // Fechar WebSocket específico do símbolo
+  if (Array.isArray(wsConnections)) {
+    for (let i = 0; i < wsConnections.length; i++) {
+      const ws = wsConnections[i];
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // Verificar se este WebSocket contém o símbolo
+        const wsStreams = ws.streams || [];
+        if (wsStreams.some(stream => stream.includes(symbol.toLowerCase()))) {
+          log('info', `[WEBSOCKET] Fechando WebSocket para ${symbol} (streams: ${wsStreams.join(', ')})`);
+          ws.close();
+          break; // Fecha apenas o primeiro WebSocket que contém o símbolo
+        }
       }
     }
   }
@@ -246,18 +243,36 @@ function unsubscribeSymbolStream(symbol) {
 
 // Wrapper para o callback de candle/evento
 async function onCandleReceivedWrapper(symbol, timeframe, candle, indicators) {
-  await candleCallbacks.onCandleReceived(symbol, timeframe, candle, indicators);
+  // Chama o callback original
+  if (candleCallbacks.onCandleReceived && candleCallbacks.onCandleReceived !== onCandleReceivedWrapper) {
+    await candleCallbacks.onCandleReceived(symbol, timeframe, candle, indicators);
+  }
 
+  // Verifica desinscrição apenas uma vez após o primeiro evento
   if (typeof global !== 'undefined' && global.tradingMode === 'MANAGEMENT_ONLY' && !onCandleReceivedWrapper.checkedOnce) {
     onCandleReceivedWrapper.checkedOnce = true;
+    log('info', '[WEBSOCKET] Primeiro evento recebido. Verificando posições abertas para desinscrição...');
+    
     const botState = getBotState();
+    const symbolsToUnsubscribe = [];
+    
     for (const sym of Array.from(subscribedSymbols)) {
       const pos = botState[sym]?.position;
       if (!pos || pos.side === 'NONE') {
+        symbolsToUnsubscribe.push(sym);
+      }
+    }
+    
+    if (symbolsToUnsubscribe.length > 0) {
+      log('info', `[WEBSOCKET] Desinscrevendo ${symbolsToUnsubscribe.length} símbolos sem posição aberta: ${symbolsToUnsubscribe.join(', ')}`);
+      
+      for (const sym of symbolsToUnsubscribe) {
         unsubscribeSymbolStream(sym);
         subscribedSymbols.delete(sym);
-        log('info', `[WEBSOCKET] Desinscrito de ${sym} pois não há mais posição aberta.`);
+        log('info', `[WEBSOCKET] Desinscrito de ${sym} pois não há posição aberta.`);
       }
+    } else {
+      log('info', '[WEBSOCKET] Todos os símbolos assinados têm posição aberta. Mantendo assinaturas.');
     }
   }
 }

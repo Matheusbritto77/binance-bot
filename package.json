@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "jest": "^29.0.0",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "rewire": "^8.0.0"
   }
 }

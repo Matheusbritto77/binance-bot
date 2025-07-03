@@ -54,7 +54,7 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
             botState[symbol] = { data: {}, position: { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null } };
         }
         if (!botState[symbol].position) {
-            botState[symbol].position = { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null };
+             botState[symbol].position = { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null };
         }
         try {
             try {
@@ -74,16 +74,16 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
     // Monta lista de streams para todos os pares/timeframes
     const streams = [];
     for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-        for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
-            if (!botState[symbol].data[timeframe]) {
-                botState[symbol].data[timeframe] = { candles: [], indicators: {}, lastPrice: 0, isReady: false };
-            }
-            let isTimeframeAlreadyReady = botState[symbol].data[timeframe].isReady || false;
-            if (isTimeframeAlreadyReady) {
+            for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
+                    if (!botState[symbol].data[timeframe]) {
+                         botState[symbol].data[timeframe] = { candles: [], indicators: {}, lastPrice: 0, isReady: false };
+                    }
+                    let isTimeframeAlreadyReady = botState[symbol].data[timeframe].isReady || false;
+                    if (isTimeframeAlreadyReady) {
                 console.log(colors.green, `  [${symbol}] [${timeframe}] já está PRÉ-AQUECIDO com ${botState[symbol].data[timeframe].candles.length} velas.`);
-            } else {
+                    } else {
                 console.log(colors.yellow, `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`, colors.reset);
-            }
+                    }
             streams.push(`${symbol.toLowerCase()}@kline_${timeframe}`);
         }
     }

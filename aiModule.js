@@ -6,9 +6,15 @@ const path = require('path');
 const { RSI, EMA, BollingerBands, SMA } = require('technicalindicators');
 
 // Caminhos para os arquivos JSON (na raiz do projeto)
-const AI_DB_FILE = path.resolve(__dirname, 'ai_data.json'); // path.resolve para garantir caminho absoluto
-const AI_MODEL_FILE = path.resolve(__dirname, 'ai_model.json');
-const AI_STATS_FILE = path.resolve(__dirname, 'ai_stats.json'); // Para estatísticas de normalização por par/timeframe
+const AI_DATA_DIR = path.resolve(__dirname, 'ai_data');
+if (!fs.existsSync(AI_DATA_DIR)) fs.mkdirSync(AI_DATA_DIR);
+const AI_DB_FILE = path.join(AI_DATA_DIR, 'ai_data.json'); // path.resolve para garantir caminho absoluto
+const AI_MODEL_FILE = path.join(AI_DATA_DIR, 'ai_model.json');
+const AI_STATS_FILE = path.join(AI_DATA_DIR, 'ai_stats.json'); // Para estatísticas de normalização por par/timeframe
+
+// NOVO: Pasta para dados em tempo real
+const REALTIME_DATA_DIR = path.resolve(__dirname, 'realtime_data');
+if (!fs.existsSync(REALTIME_DATA_DIR)) fs.mkdirSync(REALTIME_DATA_DIR);
 
 // Cache em memória dos dados para treinamento da IA.
 // Estrutura: { symbol: { timeframe: [dataPoint, ...] } }
@@ -128,160 +134,188 @@ function addDataPoint(symbol, timeframe, dataPoint) {
     return false; // Ponto de dado já existia e não foi adicionado
 }
 
-
 /**
  * Inicializa o módulo de IA, carregando dados, modelo e estatísticas salvas.
  */
 async function init() {
     try {
-        if (fs.existsSync(AI_DB_FILE)) {
-            aiTrainingData = JSON.parse(fs.readFileSync(AI_DB_FILE, 'utf-8'));
-            console.log('🤖 Módulo de IA: Dados de treinamento carregados do disco.');
+        // Tenta carregar do banco de dados primeiro
+        const database = require('./database');
+        
+        // Carrega dados de treinamento
+        const loadedData = await database.loadData('ai_data');
+        if (loadedData) {
+            aiTrainingData = loadedData;
+            console.log('🤖 Módulo de IA: Dados de treinamento carregados do MongoDB.');
             let totalLoaded = 0;
             for (const sym in aiTrainingData) {
                 for (const tf in aiTrainingData[sym]) {
                     totalLoaded += aiTrainingData[sym][tf].length;
                 }
             }
-            console.log(`🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados de ai_data.json.`);
+            console.log(`🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados do MongoDB.`);
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            const database = require('./database');
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                if (!fs.existsSync(AI_DB_FILE)) {
+                    fs.writeFileSync(AI_DB_FILE, JSON.stringify({}, null, 2));
+                    console.log('🤖 Módulo de IA: ai_data.json criado vazio.');
+                }
+                if (fs.existsSync(AI_DB_FILE)) {
+                    aiTrainingData = JSON.parse(fs.readFileSync(AI_DB_FILE, 'utf-8'));
+                    console.log('🤖 Módulo de IA: Dados de treinamento carregados do JSON (fallback).');
+                    let totalLoaded = 0;
+                    for (const sym in aiTrainingData) {
+                        for (const tf in aiTrainingData[sym]) {
+                            totalLoaded += aiTrainingData[sym][tf].length;
+                        }
+                    }
+                    console.log(`🤖 Módulo de IA: Total de ${totalLoaded} pontos de dados carregados de ai_data.json.`);
         } else {
             console.log('🤖 Módulo de IA: Banco de dados de IA não encontrado, iniciando com dados vazios.');
             aiTrainingData = {};
+                }
+            } else {
+                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com dados vazios.');
+                aiTrainingData = {};
+            }
         }
 
-        if (fs.existsSync(AI_MODEL_FILE)) {
-            const loadedModel = JSON.parse(fs.readFileSync(AI_MODEL_FILE, 'utf-8'));
+        // Carrega modelo
+        const loadedModel = await database.loadData('ai_model');
+        if (loadedModel) {
             aiModel = { ...aiModel, ...loadedModel };
-            console.log('🤖 Módulo de IA: Modelo de IA carregado.');
-            isAIReadyForTrading = true; // Se há um modelo salvo, a IA está pronta
+            console.log('🤖 Módulo de IA: Modelo de IA carregado do MongoDB.');
+            isAIReadyForTrading = true;
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                if (!fs.existsSync(AI_MODEL_FILE)) {
+                    fs.writeFileSync(AI_MODEL_FILE, JSON.stringify(aiModel, null, 2));
+                    console.log('🤖 Módulo de IA: ai_model.json criado com modelo padrão.');
+                }
+                if (fs.existsSync(AI_MODEL_FILE)) {
+                    const loadedModelJson = JSON.parse(fs.readFileSync(AI_MODEL_FILE, 'utf-8'));
+                    aiModel = { ...aiModel, ...loadedModelJson };
+                    console.log('🤖 Módulo de IA: Modelo de IA carregado do JSON (fallback).');
+                    isAIReadyForTrading = true;
         } else {
             console.log('🤖 Módulo de IA: Modelo de IA não encontrado, iniciando com pesos padrão (NÃO PRONTA para trading).');
             isAIReadyForTrading = false;
         }
+            } else {
+                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com modelo padrão (NÃO PRONTA para trading).');
+                isAIReadyForTrading = false;
+            }
+        }
 
-        if (fs.existsSync(AI_STATS_FILE)) {
-            dataStatsByPair = JSON.parse(fs.readFileSync(AI_STATS_FILE, 'utf-8')); // CORRIGIDO: Carrega para dataStatsByPair
-            console.log('🤖 Módulo de IA: Estatísticas de normalização carregadas.');
+        // Carrega estatísticas
+        const loadedStats = await database.loadData('ai_stats');
+        if (loadedStats) {
+            dataStatsByPair = loadedStats;
+            console.log('🤖 Módulo de IA: Estatísticas de normalização carregadas do MongoDB.');
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                if (!fs.existsSync(AI_STATS_FILE)) {
+                    fs.writeFileSync(AI_STATS_FILE, JSON.stringify({}, null, 2));
+                    console.log('🤖 Módulo de IA: ai_stats.json criado vazio.');
+                }
+                if (fs.existsSync(AI_STATS_FILE)) {
+                    dataStatsByPair = JSON.parse(fs.readFileSync(AI_STATS_FILE, 'utf-8'));
+                    console.log('🤖 Módulo de IA: Estatísticas de normalização carregadas do JSON (fallback).');
         } else {
             console.log('🤖 Módulo de IA: Estatísticas de normalização não encontradas.');
-            dataStatsByPair = {}; // Inicializa vazio se não encontrado
+                    dataStatsByPair = {};
+                }
+            } else {
+                console.log('🤖 Módulo de IA: FORCE_MONGO_ONLY ativo - ignorando JSON, iniciando com estatísticas vazias.');
+                dataStatsByPair = {};
+            }
         }
 
     } catch (error) {
-        console.error('🤖 Módulo de IA: Erro ao carregar dados/modelo/estatísticas do disco:', error);
-        aiTrainingData = {}; // Reseta se houver erro
+        console.error('🤖 Módulo de IA: Erro ao carregar dados/modelo/estatísticas:', error);
+        aiTrainingData = {};
         aiModel.weights = Object.fromEntries(Object.keys(aiModel.weights).map(key => [key, 0.0]));
         aiModel.bias = 0.0;
-        dataStatsByPair = {}; // CORRIGIDO: Reseta as stats também
-        isAIReadyForTrading = false; // Erro ao carregar, então a IA não está pronta
+        dataStatsByPair = {};
+        isAIReadyForTrading = false;
     }
 }
 
 /**
  * Coleta dados de velas em tempo real e indicadores para treinamento da IA (via WebSocket).
+ * Esta função é chamada pelo websocketService quando uma nova vela final é processada.
  * @param {string} symbol - O símbolo do par de trading.
  * @param {string} timeframe - O tempo gráfico da vela.
- * @param {object} candle - O objeto de vela bruta da Binance.
- * @param {object} indicators - Indicadores técnicos calculados para a vela.
+ * @param {object} candle - A vela final processada.
+ * @param {object} indicators - Os indicadores calculados para esta vela.
  */
 function collectData(symbol, timeframe, candle, indicators) {
-    const currentClose = parseFloat(candle.close);
-    const currentVolume = parseFloat(candle.volume);
-
-    // Para calcular price_change e volume_change, precisamos da vela anterior
-    const currentDataArray = aiTrainingData[symbol]?.[timeframe] || [];
-    const previousDataPoint = currentDataArray.length > 0 ? currentDataArray[currentDataArray.length - 1] : null;
-
+    // Cria um ponto de dados completo para a IA
     const dataPoint = {
         timestamp: parseInt(candle.closeTime),
         open: parseFloat(candle.open),
         high: parseFloat(candle.high),
         low: parseFloat(candle.low),
-        close: currentClose,
-        volume: currentVolume,
+        close: parseFloat(candle.close),
+        volume: parseFloat(candle.volume),
         rsi: indicators.rsi,
         ema: indicators.ema,
         bb_upper: indicators.bb ? indicators.bb.upper : null,
         bb_lower: indicators.bb ? indicators.bb.lower : null,
         bb_middle: indicators.bb ? indicators.bb.middle : null,
-        price_change_1m: previousDataPoint ? (currentClose - previousDataPoint.close) / previousDataPoint.close : 0,
-        volume_change_1m: previousDataPoint ? (currentVolume - previousDataPoint.volume) / previousDataPoint.volume : 0,
+        price_change_1m: 0, // Será calculado quando houver dados suficientes
+        volume_change_1m: 0, // Será calculado quando houver dados suficientes
     };
-    
-    addDataPoint(symbol, timeframe, dataPoint); // Usa a função unificada de adição
-}
 
-/**
- * Coleta dados de velas históricas para o treinamento inicial da IA (via HTTP - DataHttp.js).
- * Estes dados já vêm pré-processados pelo DataHttp.js.
- * @param {string} symbol - O símbolo do par de trading.
- * @param {string} timeframe - O tempo gráfico da vela.
- * @param {Array<object>} historicalProcessedData - Array de objetos de dados já processados (com indicadores e features).
- */
-function collectHistoricalDataFromHttp(symbol, timeframe, historicalProcessedData) {
-    if (!historicalProcessedData || historicalProcessedData.length === 0) {
-        console.log(`🤖 Módulo de IA: Nenhum dado histórico (HTTP) disponível para ${symbol} - ${timeframe}.`);
-        return;
+    // Adiciona o ponto de dados ao histórico de treinamento
+    const wasAdded = addDataPoint(symbol, timeframe, dataPoint);
+    if (wasAdded) {
+        console.log(`🤖 Módulo de IA: Existiam ${aiTrainingData[symbol][timeframe].length - 1} pontos, adicionados 1 novos, total agora ${aiTrainingData[symbol][timeframe].length} para ${symbol} - ${timeframe}.`);
     }
-
-    let addedCount = 0;
-    historicalProcessedData.forEach(dp => {
-        if (addDataPoint(symbol, timeframe, dp)) { // Usa a função unificada de adição
-            addedCount++;
-        }
-    });
-    console.log(`🤖 Módulo de IA: Adicionados ${addedCount} novos pontos de dados HISTÓRICOS (HTTP) para ${symbol} - ${timeframe}.`);
 }
 
 /**
- * Treina o modelo de IA usando uma abordagem simples de gradiente descendente em um modelo linear.
- * O treinamento é feito por par de moeda/timeframe para calcular stats específicas.
+ * Treina o modelo de IA usando os dados coletados.
+ * Este processo é executado periodicamente para manter o modelo atualizado.
  */
 async function train() {
     console.log('🤖 Módulo de IA: Iniciando processo de treinamento...');
 
-    // Primeiro, vamos garantir que temos dados suficientes para TODOS os pares/timeframes
-    // E calcular as estatísticas de normalização para CADA par/timeframe
-    let allDataSufficient = true;
-    const newStatsByPair = {}; // Armazenará as novas estatísticas por par/timeframe
-
+    // Verifica se há dados suficientes para treinar
+    let totalDataPoints = 0;
     for (const symbol in aiTrainingData) {
-        newStatsByPair[symbol] = {};
         for (const timeframe in aiTrainingData[symbol]) {
-            const data = aiTrainingData[symbol][timeframe];
-            if (data.length < aiModel.minDataForTraining) {
-                console.log(`🤖 Módulo de IA: Poucos dados (${data.length}) para treinar ${symbol} - ${timeframe}. Mínimo: ${aiModel.minDataForTraining}`);
-                allDataSufficient = false;
-                continue; // Não calcula stats se não há dados suficientes
-            }
-            // Calcula as estatísticas de normalização para ESTE CONJUNTO ESPECÍFICO
-            newStatsByPair[symbol][timeframe] = calculateDataStatsForSet(data);
+            totalDataPoints += aiTrainingData[symbol][timeframe].length;
         }
     }
 
-    if (!allDataSufficient) {
-        console.log('🤖 Módulo de IA: Treinamento abortado. Dados insuficientes para um ou mais pares/timeframes.');
-        isAIReadyForTrading = false; // IA não está pronta se não pôde treinar todos os pares
-        try { // Salva os dados coletados mesmo se o treinamento for abortado
-            fs.writeFileSync(AI_DB_FILE, JSON.stringify(aiTrainingData, null, 2));
-            console.log('🤖 Módulo de IA: Dados de treinamento coletados salvos.');
-        } catch (error) {
-            console.error('🤖 Módulo de IA: Erro ao salvar dados de treinamento coletados:', error);
-        }
+    if (totalDataPoints < aiModel.minDataForTraining) {
+        console.log(`🤖 Módulo de IA: Dados insuficientes para treinamento (${totalDataPoints}/${aiModel.minDataForTraining} pontos mínimos).`);
         return;
     }
 
-    // Se todos os dados são suficientes, atualiza as estatísticas globais
-    dataStatsByPair = newStatsByPair; // CORRIGIDO: Atribui a variável global `dataStatsByPair`
+    // Calcula estatísticas de normalização para cada par/timeframe
+    console.log('🤖 Módulo de IA: Calculando estatísticas de normalização...');
+    for (const symbol in aiTrainingData) {
+        if (!dataStatsByPair[symbol]) dataStatsByPair[symbol] = {};
+        for (const timeframe in aiTrainingData[symbol]) {
+            const data = aiTrainingData[symbol][timeframe];
+            if (data.length > 0) {
+                dataStatsByPair[symbol][timeframe] = calculateDataStatsForSet(data);
+                console.log(`🤖 Módulo de IA: ${data.length} pontos novos desde o último treinamento para ${symbol} - ${timeframe}.`);
+            }
+        }
+    }
     console.log('🤖 Módulo de IA: Estatísticas de normalização atualizadas por par/timeframe.');
 
-    // Agora, realiza o treinamento (ajuste de pesos) para o modelo global
+    // Treina o modelo usando todos os dados disponíveis
+    console.log('🤖 Módulo de IA: Treinando modelo...');
     let totalOverallLoss = 0;
     let totalTrainingSamples = 0;
-
-    for (let epoch = 0; epoch < aiModel.epochs; epoch++) {
-        totalOverallLoss = 0;
-        totalTrainingSamples = 0;
 
         for (const symbol in aiTrainingData) {
             for (const timeframe in aiTrainingData[symbol]) {
@@ -344,16 +378,36 @@ async function train() {
                     totalOverallLoss += Math.pow(error, 2);
                 }
                 totalTrainingSamples += trainingSet.length;
-            }
         }
     }
     console.log(`🤖 Módulo de IA: Modelo global treinado para todos os pares/timeframes.`);
 
     try {
+        // Salva no banco de dados primeiro, com fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+        const database = require('./database');
+        
+        // Salva modelo
+        const modelSaved = await database.saveData('ai_model', aiModel);
+        if (!modelSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
         fs.writeFileSync(AI_MODEL_FILE, JSON.stringify(aiModel, null, 2));
-        fs.writeFileSync(AI_DB_FILE, JSON.stringify(aiTrainingData, null, 2)); // Salva os dados ATUALIZADOS
-        fs.writeFileSync(AI_STATS_FILE, JSON.stringify(dataStatsByPair, null, 2)); // CORRIGIDO: Salva dataStatsByPair
-        console.log('🤖 Módulo de IA: Modelo, dados e estatísticas salvos no disco.');
+            console.log('🤖 Módulo de IA: Modelo salvo no JSON (fallback).');
+        }
+        
+        // Salva dados de treinamento
+        const dataSaved = await database.saveData('ai_data', aiTrainingData);
+        if (!dataSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
+            fs.writeFileSync(AI_DB_FILE, JSON.stringify(aiTrainingData, null, 2));
+            console.log('🤖 Módulo de IA: Dados salvos no JSON (fallback).');
+        }
+        
+        // Salva estatísticas
+        const statsSaved = await database.saveData('ai_stats', dataStatsByPair);
+        if (!statsSaved && (!database.isConnected() || !database.FORCE_MONGO_ONLY)) {
+            fs.writeFileSync(AI_STATS_FILE, JSON.stringify(dataStatsByPair, null, 2));
+            console.log('🤖 Módulo de IA: Estatísticas salvas no JSON (fallback).');
+        }
+        
+        console.log('🤖 Módulo de IA: Modelo, dados e estatísticas salvos.');
         isAIReadyForTrading = true; // IA está treinada e pronta!
     } catch (error) {
         console.error('🤖 Módulo de IA: Erro ao salvar modelo/dados/estatísticas de treinamento:', error);
@@ -487,38 +541,56 @@ async function predictExit(symbol, timeframe, latestCandles, currentPosition) {
         }
     }
 
-    if (Math.random() < 0.001) {
-        return { action: 'CLOSE', reason: 'AI_UNEXPECTED_PATTERN', confidence: 60 };
-    }
-
     return null;
 }
 
 /**
- * Retorna o status de prontidão da IA (se está treinada e pronta para dar sinais de trading).
- * @returns {boolean} True se a IA estiver pronta para trading, false caso contrário.
+ * Verifica se a IA está pronta para dar sinais de trading.
  */
 function isReadyForTrading() {
     return isAIReadyForTrading;
 }
 
 /**
- * Retorna a contagem de dados coletados para um símbolo e timeframe específicos.
- * @param {string} symbol - O símbolo.
- * @param {string} timeframe - O tempo gráfico.
- * @returns {number} O número de pontos de dados coletados para aquele par/timeframe.
+ * Retorna o número de pontos de dados coletados para um par/timeframe específico.
  */
 function getCollectedDataCount(symbol, timeframe) {
-    return aiTrainingData[symbol]?.[timeframe]?.length || 0;
+    return aiTrainingData[symbol] && aiTrainingData[symbol][timeframe] ? aiTrainingData[symbol][timeframe].length : 0;
+}
+
+/**
+ * Coleta dados históricos processados para a IA (via HTTP).
+ * Esta função é chamada quando dados históricos são buscados via HTTP.
+ * @param {string} symbol - O símbolo do par de trading.
+ * @param {string} timeframe - O tempo gráfico.
+ * @param {Array<object>} historicalProcessedData - Os dados históricos processados.
+ */
+function collectHistoricalDataFromHttp(symbol, timeframe, historicalProcessedData) {
+    if (!historicalProcessedData || !Array.isArray(historicalProcessedData)) {
+        console.log(`🤖 Módulo de IA: Dados históricos inválidos para ${symbol} - ${timeframe}`);
+        return;
+    }
+
+    let addedCount = 0;
+    for (const dataPoint of historicalProcessedData) {
+        if (addDataPoint(symbol, timeframe, dataPoint)) {
+            addedCount++;
+        }
+    }
+
+    if (addedCount > 0) {
+        console.log(`🤖 Módulo de IA: Adicionados ${addedCount} pontos históricos para ${symbol} - ${timeframe}.`);
+    }
 }
 
 module.exports = {
     init,
-    collectData, // Para dados em tempo real (WebSocket)
-    collectHistoricalDataFromHttp, // Para dados históricos (HTTP)
+    collectData,
     train,
     predict,
     predictExit,
     isReadyForTrading,
-    getCollectedDataCount
+    getCollectedDataCount,
+    collectHistoricalDataFromHttp,
+    aiModel // Exporta para que o bot.js possa acessar minDataForTraining
 };

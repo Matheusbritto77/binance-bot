@@ -20,13 +20,13 @@ function getRequestedLimit(timeframe) {
     switch(timeframe) {
         // Estes limites visam cobrir aproximadamente 7 dias, mas respeitando o limite de 1500 por requisição.
         // Para mais de 1500 velas, seria necessária uma lógica de paginação/chunking por data.
-        case '1m': return 1130; // 7 dias = 10080 velas. Limitado para uma única requisição.
-        case '5m': return 1130; // 7 dias = 2016 velas. Limitado para uma única requisição.
-        case '15m': return 1130; // Cobre ~7 dias e está abaixo de 1500.
-        case '1h': return 1130;  // Cobre ~7 dias e está abaixo de 1500.
-        case '4h': return 1130;   // Cobre ~7 dias.
-        case '1d': return 1130;   // Cobre ~7 dias.
-        default: return 300; // Padrão
+        case '1m': return 1130; 
+        case '5m': return 1130; 
+        case '15m': return 1130; 
+        case '1h': return 1130;  
+        case '4h': return 1130;   
+        case '1d': return 1130;  
+        default: return 300; 
     }
 }
 
@@ -88,12 +88,12 @@ function processHistoricalCandlesForAI(candles, timeframe) {
  */
 async function getHistoricalData(symbol, timeframe) {
     if (!binanceClient) {
-        console.error(colors.red, `  [DataHttp] ERRO: Cliente Binance não definido para o módulo DataHttp.`);
+        console.error(colors.red, `  [DataHttp] ERRO: Cliente Binance não definido para o módulo DataHttp.`);
         return null;
     }
     try {
         const limitToFetch = getRequestedLimit(timeframe);
-        console.log(colors.cyan, `  [DataHttp] Buscando ${limitToFetch} velas históricas via HTTP para ${symbol} - [${timeframe}]...`, colors.reset);
+        console.log(colors.cyan, `  [DataHttp] Buscando ${limitToFetch} velas históricas via HTTP para ${symbol} - [${timeframe}]...`, colors.reset);
 
         // A requisição HTTP REST da Binance para velas históricas
         const candles = await binanceClient.futuresCandles({
@@ -102,14 +102,116 @@ async function getHistoricalData(symbol, timeframe) {
             limit: limitToFetch
         });
 
+        // Salva as velas brutas para uso do bot (merge incremental)
+        const database = require('./database');
+        const rawDataKey = `raw_candles_${symbol}_${timeframe}`;
+        
+        // Tenta carregar dados existentes do banco
+        let existingRaw = [];
+        const loadedRaw = await database.loadData(rawDataKey);
+        if (loadedRaw) {
+            existingRaw = loadedRaw;
+            console.log(colors.yellow, `  [DataHttp] Velas brutas carregadas do MongoDB para ${symbol} - ${timeframe}.`, colors.reset);
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                const rawDir = path.join(__dirname, 'raw_candles');
+                if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir);
+                const rawFileName = `raw_candles_${symbol}_${timeframe}.json`;
+                const rawFilePath = path.join(rawDir, rawFileName);
+                if (fs.existsSync(rawFilePath)) {
+                    existingRaw = JSON.parse(fs.readFileSync(rawFilePath, 'utf-8'));
+                    console.log(colors.yellow, `  [DataHttp] Velas brutas carregadas do JSON (fallback) para ${symbol} - ${timeframe}.`, colors.reset);
+                }
+            } else {
+                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`, colors.reset);
+            }
+        }
+        
+        // Só adiciona velas novas
+        const newRaw = candles.filter(c => !existingRaw.some(e => e.openTime === c.openTime));
+        const mergedRaw = existingRaw.concat(newRaw);
+        
+        // Tenta salvar no banco primeiro
+        const rawSaved = await database.saveData(rawDataKey, mergedRaw);
+        if (rawSaved) {
+            console.log(colors.yellow, `  [DataHttp] Velas brutas salvas no MongoDB. (${newRaw.length} novas)`, colors.reset);
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                const rawDir = path.join(__dirname, 'raw_candles');
+                if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir);
+                const rawFileName = `raw_candles_${symbol}_${timeframe}.json`;
+                const rawFilePath = path.join(rawDir, rawFileName);
+                try {
+                    fs.writeFileSync(rawFilePath, JSON.stringify(mergedRaw, null, 2));
+                    console.log(colors.yellow, `  [DataHttp] Velas brutas salvas no JSON (fallback). (${newRaw.length} novas)`, colors.reset);
+                } catch (err) {
+                    console.error(colors.red, `  [DataHttp] ERRO ao salvar velas brutas:`, err, colors.reset);
+                }
+            } else {
+                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`, colors.reset);
+            }
+        }
+
+        // Processa para IA e salva também (merge incremental)
         const processedCandles = processHistoricalCandlesForAI(candles, timeframe);
-        console.log(colors.green, `  [DataHttp] ${processedCandles.length} velas históricas obtidas para ${symbol} - [${timeframe}].`);
+        const aiDataKey = `historical_data_${symbol}_${timeframe}`;
+        
+        // Tenta carregar dados processados existentes do banco
+        let existingAI = [];
+        const loadedAI = await database.loadData(aiDataKey);
+        if (loadedAI) {
+            existingAI = loadedAI;
+            console.log(colors.yellow, `  [DataHttp] Dados históricos para IA carregados do MongoDB para ${symbol} - ${timeframe}.`, colors.reset);
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                const aiDir = path.join(__dirname, 'historical_data');
+                if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir);
+                const aiFileName = `historical_data_${symbol}_${timeframe}.json`;
+                const aiFilePath = path.join(aiDir, aiFileName);
+                if (fs.existsSync(aiFilePath)) {
+                    existingAI = JSON.parse(fs.readFileSync(aiFilePath, 'utf-8'));
+                    console.log(colors.yellow, `  [DataHttp] Dados históricos para IA carregados do JSON (fallback) para ${symbol} - ${timeframe}.`, colors.reset);
+                }
+            } else {
+                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando JSON para ${symbol} - ${timeframe}.`, colors.reset);
+            }
+        }
+        
+        // Só adiciona dados novos
+        const newAI = processedCandles.filter(c => !existingAI.some(e => e.timestamp === c.timestamp));
+        const mergedAI = existingAI.concat(newAI);
+        
+        // Tenta salvar no banco primeiro
+        const aiSaved = await database.saveData(aiDataKey, mergedAI);
+        if (aiSaved) {
+            console.log(colors.yellow, `  [DataHttp] Dados históricos para IA salvos no MongoDB. (${newAI.length} novos)`, colors.reset);
+        } else {
+            // Fallback para JSON apenas se FORCE_MONGO_ONLY estiver desabilitado
+            if (!database.isConnected() || !database.FORCE_MONGO_ONLY) {
+                const aiDir = path.join(__dirname, 'historical_data');
+                if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir);
+                const aiFileName = `historical_data_${symbol}_${timeframe}.json`;
+                const aiFilePath = path.join(aiDir, aiFileName);
+                try {
+                    fs.writeFileSync(aiFilePath, JSON.stringify(mergedAI, null, 2));
+                    console.log(colors.yellow, `  [DataHttp] Dados históricos para IA salvos no JSON (fallback). (${newAI.length} novos)`, colors.reset);
+                } catch (err) {
+                    console.error(colors.red, `  [DataHttp] ERRO ao salvar dados históricos:`, err, colors.reset);
+                }
+            } else {
+                console.log(colors.yellow, `  [DataHttp] FORCE_MONGO_ONLY ativo - ignorando salvamento JSON para ${symbol} - ${timeframe}.`, colors.reset);
+            }
+        }
+
         return processedCandles;
 
     } catch (error) {
         // Captura e loga o erro sem relançá-lo, permitindo que o bot continue.
-        console.error(colors.red, `  [DataHttp] ERRO ao buscar dados históricos para ${symbol} - [${timeframe}]:`, `[${error.code || 'S/C'}] ${error.message}`, colors.reset);
-        console.log(colors.yellow, `  [DataHttp] Pulando dados históricos para ${symbol} - [${timeframe}] devido ao erro.`, colors.reset);
+        console.error(colors.red, `  [DataHttp] ERRO ao buscar dados históricos para ${symbol} - [${timeframe}]:`, `[${error.code || 'S/C'}] ${error.message}`, colors.reset);
+        console.log(colors.yellow, `  [DataHttp] Pulando dados históricos para ${symbol} - [${timeframe}] devido ao erro.`, colors.reset);
         return null; // Retorna null para indicar falha na coleta para este timeframe/símbolo.
     }
 }

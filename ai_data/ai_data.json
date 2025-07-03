@@ -2,6 +2,34 @@
   "BTCUSDT": {
     "1m": [
       {
+        "timestamp": null,
+        "open": null,
+        "high": null,
+        "low": null,
+        "close": 100,
+        "volume": null,
+        "rsi": 50,
+        "bb_upper": null,
+        "bb_lower": null,
+        "bb_middle": null,
+        "price_change_1m": 0,
+        "volume_change_1m": 0
+      },
+      {
+        "timestamp": null,
+        "open": null,
+        "high": null,
+        "low": null,
+        "close": 100,
+        "volume": null,
+        "rsi": 50,
+        "bb_upper": null,
+        "bb_lower": null,
+        "bb_middle": null,
+        "price_change_1m": 0,
+        "volume_change_1m": 0
+      },
+      {
         "timestamp": 1751424359999,
         "open": 105657.4,
         "high": 105657.5,

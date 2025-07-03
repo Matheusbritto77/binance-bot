@@ -14,6 +14,7 @@ const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x
 let client;
 let botState = {}; // O estado principal do bot, mantido aqui e atualizado com WS
 let candleCallbacks = {};
+let subscribedSymbols = new Set();
 
 // Constantes para os períodos dos indicadores, obtidas da configuração
 const requiredCandlesForIndicators = {
@@ -151,6 +152,8 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
         connectWS();
     });
 
+    subscribedSymbols = new Set(symbolsToSubscribe);
+
     return botState;
 }
 
@@ -217,6 +220,46 @@ function handleRealtimeCandle(symbol, timeframe, candle, initialReady) {
  */
 function getBotState() {
     return botState;
+}
+
+// Função para desinscrever stream de um símbolo
+function unsubscribeSymbolStream(symbol) {
+  // Procure o WebSocket correspondente e feche/desinscreva
+  // (Aqui depende da sua implementação de ws, mas pode ser algo como ws.close() ou ws.terminate())
+  // Exemplo genérico:
+  if (Array.isArray(wsConnections)) { // Assuming wsConnections is the array of WebSocket instances
+    for (const ws of wsConnections) {
+      if (ws && ws.readyState === WebSocket.OPEN) { // Check if the WebSocket is open
+        // This part needs to be adapted to your specific WebSocket handling.
+        // For example, if you have a map of symbol to WebSocket, you'd do:
+        // if (wsClients.has(symbol)) {
+        //   wsClients.get(symbol).close();
+        //   log('info', `[WEBSOCKET] WebSocket fechado para ${symbol}`);
+        // }
+        log('info', `[WebSocketService] Tentando fechar WebSocket para ${symbol} (readyState: ${ws.readyState})`);
+        ws.close();
+        log('info', `[WEBSOCKET] WebSocket fechado para ${symbol}`);
+      }
+    }
+  }
+}
+
+// Wrapper para o callback de candle/evento
+async function onCandleReceivedWrapper(symbol, timeframe, candle, indicators) {
+  await candleCallbacks.onCandleReceived(symbol, timeframe, candle, indicators);
+
+  if (typeof global !== 'undefined' && global.tradingMode === 'MANAGEMENT_ONLY' && !onCandleReceivedWrapper.checkedOnce) {
+    onCandleReceivedWrapper.checkedOnce = true;
+    const botState = getBotState();
+    for (const sym of Array.from(subscribedSymbols)) {
+      const pos = botState[sym]?.position;
+      if (!pos || pos.side === 'NONE') {
+        unsubscribeSymbolStream(sym);
+        subscribedSymbols.delete(sym);
+        log('info', `[WEBSOCKET] Desinscrito de ${sym} pois não há mais posição aberta.`);
+      }
+    }
+  }
 }
 
 module.exports = {

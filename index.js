@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Importa os módulos
-const aiModule = require('./aiModule');
+let aiModule = require('./aiModule');
 let websocketService = require('./websocketService');
 const dataHttp = require('./dataHttp'); // NOVO: Importa o módulo para dados históricos HTTP
 const database = require('./database');

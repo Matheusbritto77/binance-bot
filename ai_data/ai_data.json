@@ -18194,6 +18194,20 @@
         "bb_middle": 109127.76500000029,
         "price_change_1m": -0.00005042170883755042,
         "volume_change_1m": -0.5682685253118122
+      },
+      {
+        "timestamp": null,
+        "open": null,
+        "high": null,
+        "low": null,
+        "close": 100,
+        "volume": null,
+        "rsi": 50,
+        "bb_upper": null,
+        "bb_lower": null,
+        "bb_middle": null,
+        "price_change_1m": 0,
+        "volume_change_1m": 0
       }
     ],
     "5m": [

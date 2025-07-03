@@ -29,36 +29,37 @@ let tradingMode = 'FULL_TRADING'; // 'FULL_TRADING' or 'MANAGEMENT_ONLY'
 const UPDATE_STATUS_FILE = path.join(__dirname, 'update_status.json');
 const UPDATE_INTERVAL_HOURS = 24;
 
+
 // =================================================================================================
 // 2. CÉREBRO PRINCIPAL DO BOT (ANÁLISE MULTI-TIMEFRAME E AI)
 // =================================================================================================
 
 // Função de callback para ser chamada pelo websocketService quando uma nova vela final é processada
 async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
-    // console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Nova Vela Processada...`);
+    // console.log(colors.cyan, `\n[${new Date().toLocaleTimeString()}] [${symbol}] [${timeframe}] Nova Vela Processada...`);
 
-    // A IA deve coletar os dados processados em tempo real (do WebSocket)
-    aiModule.collectData(symbol, timeframe, candle, indicators);
+    // A IA deve coletar os dados processados em tempo real (do WebSocket)
+    aiModule.collectData(symbol, timeframe, candle, indicators);
 
-    // Roda a estratégia principal apenas para o timeframe principal (o primeiro da lista)
-    // E APENAS se o histórico para este timeframe estiver "aquecido" via WebSocket
-    const isPrimaryTimeframeWebSocketReady = websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length >= websocketService.MIN_CANDLES_FOR_FULL_INDICATORS;
+    // Roda a estratégia principal apenas para o timeframe principal (o primeiro da lista)
+    // E APENAS se o histórico para este timeframe estiver "aquecido" via WebSocket
+    const isPrimaryTimeframeWebSocketReady = websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length >= websocketService.MIN_CANDLES_FOR_FULL_INDICATORS;
 
-    if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && isPrimaryTimeframeWebSocketReady) {
-        await runMasterStrategy(symbol, timeframe);
-    } else if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && !isPrimaryTimeframeWebSocketReady) {
+    if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && isPrimaryTimeframeWebSocketReady) {
+        await runMasterStrategy(symbol, timeframe);
+    } else if (timeframe === STRATEGY_CONFIG.timeframesToWatch[0] && !isPrimaryTimeframeWebSocketReady) {
         console.log(colors.gray, `  [${symbol}] [${timeframe}] Histórico via WebSocket insuficiente para tomar decisões (${websocketService.getBotState()[symbol]?.data[timeframe]?.candles?.length || 0}/${websocketService.MIN_CANDLES_FOR_FULL_INDICATORS} velas).`, colors.reset);
-    }
+    }
 }
 
 
 async function runMasterStrategy(symbol, timeframe) {
-    const symbolState = websocketService.getBotState()[symbol];
+    const symbolState = websocketService.getBotState()[symbol];
 
-    if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
+    if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
         console.log(colors.yellow, `[DECISÃO] [${symbol}][${timeframe}] Histórico insuficiente para decisão.`, colors.reset);
-        return;
-    }
+        return;
+    }
 
     // Log detalhado dos indicadores e parâmetros
     const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
@@ -74,11 +75,11 @@ async function runMasterStrategy(symbol, timeframe) {
     console.log(`  Parâmetros Estratégia:`, STRATEGY_CONFIG.strategies);
     console.log(colors.reset);
 
-    // Always manage open positions, regardless of trading mode
-    if (symbolState.position.side !== 'NONE') {
-        await manageOpenPosition(symbol);
-        return; // If there's an open position, just manage it and return
-    }
+    // Always manage open positions, regardless of trading mode
+    if (symbolState.position.side !== 'NONE') {
+        await manageOpenPosition(symbol);
+        return; // If there's an open position, just manage it and return
+    }
 
     // If in management-only mode and no open position, do not look for new opportunities
     if (tradingMode === 'MANAGEMENT_ONLY') {
@@ -86,14 +87,14 @@ async function runMasterStrategy(symbol, timeframe) {
         return;
     }
 
-    const { strategies, aiModule: aiModuleConfig } = STRATEGY_CONFIG;
-    let signal = null;
-    let aiReasoning = null; // Para guardar a previsão da IA
+    const { strategies, aiModule: aiModuleConfig } = STRATEGY_CONFIG;
+    let signal = null;
+    let aiReasoning = null; // Para guardar a previsão da IA
     let aiPrediction = null;
 
-    // --- LÓGICA DE DECISÃO COMBINADA ---
+    // --- LÓGICA DE DECISÃO COMBINADA ---
     // 1. IA funciona como ponto de equilíbrio/confirmação, não decisão final
-    if (aiModuleConfig.enabled && aiModule.isReadyForTrading()) {
+    if (aiModuleConfig.enabled && aiModule.isReadyForTrading()) {
         aiPrediction = await aiModule.predict(symbol, timeframe, symbolState.data[timeframe].candles);
         if (aiPrediction) {
             console.log(colors.magenta, `[IA] Previsão: ${aiPrediction.action} (confiança: ${aiPrediction.confidence.toFixed(2)}%)`);
@@ -102,19 +103,19 @@ async function runMasterStrategy(symbol, timeframe) {
         }
         // IA agora é apenas confirmação, não decisão final
         if (aiPrediction && aiPrediction.action !== 'HOLD') {
-            aiReasoning = aiPrediction.action;
+            aiReasoning = aiPrediction.action;
             console.log(colors.gray, `  [${symbol}] 🤖 IA como confirmação: ${aiPrediction.action} (${aiPrediction.confidence.toFixed(2)}%)`, colors.reset);
-        } else if (aiPrediction && aiPrediction.action === 'HOLD') {
+        } else if (aiPrediction && aiPrediction.action === 'HOLD') {
             console.log(colors.gray, `  [${symbol}] 🤖 IA: HOLD (${aiPrediction.confidence.toFixed(2)}%).`, colors.reset);
-            aiReasoning = 'HOLD';
-        }
-    } else if (aiModuleConfig.enabled && !aiModule.isReadyForTrading()) {
+            aiReasoning = 'HOLD';
+        }
+    } else if (aiModuleConfig.enabled && !aiModule.isReadyForTrading()) {
         console.log(colors.gray, `  [${symbol}] 🤖 IA ainda em treinamento ou não pronta. Usando apenas estratégias tradicionais.`, colors.reset);
-    }
+    }
 
     // 2. Estratégias tradicionais são a base da decisão, IA é confirmação
-        if (strategies.trendFollowing.enabled) {
-            const tfSignal = checkTrendFollowingStrategy(symbol, strategies.trendFollowing);
+    if (strategies.trendFollowing.enabled) {
+        const tfSignal = checkTrendFollowingStrategy(symbol, strategies.trendFollowing);
         if (tfSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === tfSignal.side) {
@@ -125,7 +126,7 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
                 console.log(colors.green, `[DECISÃO] SINAL DE TENDÊNCIA (IA não relevante): ${tfSignal.side}`);
-                signal = tfSignal;
+                signal = tfSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
             } 
             // Se IA discorda, rejeita o sinal
@@ -136,15 +137,15 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
                 console.log(colors.green, `[DECISÃO] SINAL DE TENDÊNCIA (sem IA): ${tfSignal.side}`);
-                signal = tfSignal;
+                signal = tfSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
             }
-            }
-        }
-        
+        }
+    }
+    
     // Só verifica outras estratégias se ainda não houver um sinal válido
-        if (!signal && strategies.meanReversion.enabled) {
-            const mrSignal = checkMeanReversionStrategy(symbol, strategies.meanReversion);
+    if (!signal && strategies.meanReversion.enabled) {
+        const mrSignal = checkMeanReversionStrategy(symbol, strategies.meanReversion);
         if (mrSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === mrSignal.side) {
@@ -155,7 +156,7 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
                 console.log(colors.green, `[DECISÃO] SINAL DE REVERSÃO (IA não relevante): ${mrSignal.side}`);
-                signal = mrSignal;
+                signal = mrSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
             } 
             // Se IA discorda, rejeita o sinal
@@ -166,14 +167,14 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
                 console.log(colors.green, `[DECISÃO] SINAL DE REVERSÃO (sem IA): ${mrSignal.side}`);
-                signal = mrSignal;
+                signal = mrSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
             }
-            }
-        }
+        }
+    }
 
-        if (!signal && strategies.breakout.enabled) {
-            const boSignal = checkBreakoutStrategy(symbol, strategies.breakout);
+    if (!signal && strategies.breakout.enabled) {
+        const boSignal = checkBreakoutStrategy(symbol, strategies.breakout);
         if (boSignal) {
             // Se IA está pronta e concorda com a estratégia tradicional
             if (aiModule.isReadyForTrading() && aiReasoning && aiReasoning === boSignal.side) {
@@ -184,7 +185,7 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se IA não está pronta ou dá HOLD, aceita estratégia tradicional
             else if (!aiModule.isReadyForTrading() || aiReasoning === 'HOLD') {
                 console.log(colors.green, `[DECISÃO] SINAL DE ROMPIMENTO (IA não relevante): ${boSignal.side}`);
-                signal = boSignal;
+                signal = boSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional válida.`, colors.reset);
             } 
             // Se IA discorda, rejeita o sinal
@@ -195,100 +196,77 @@ async function runMasterStrategy(symbol, timeframe) {
             // Se não há IA, aceita estratégia tradicional
             else if (!aiReasoning) {
                 console.log(colors.green, `[DECISÃO] SINAL DE ROMPIMENTO (sem IA): ${boSignal.side}`);
-                signal = boSignal;
+                signal = boSignal;
                 console.log(colors.green, `[MOTIVO] Sinal aceito: Estratégia tradicional.`, colors.reset);
-            }
-        }
-    }
-    // FIM DA LÓGICA DE DECISÃO COMBINADA
-
-    if (signal) {
-        console.log(colors.green, `[DECISÃO FINAL] [${symbol}] Sinal: ${signal.strategy} (${signal.side})`, colors.reset);
-        // Logar parâmetros da ordem antes de abrir
-        const accountInfo = await client.futuresAccountInfo();
-        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
-        const requiredBalance = 10; // Minimum $10 to open a new position
-        const marginToUse = usdtBalance * (STRATEGY_CONFIG.marginPercentPerTrade / 100);
-        const leverage = STRATEGY_CONFIG.leverage;
-        const positionSizeInUsd = marginToUse * leverage;
-        const quantity = positionSizeInUsd / price;
-        console.log(colors.cyan, `[ORDEM] Parâmetros calculados:`);
-        console.log(`  Saldo disponível: ${usdtBalance}`);
-        console.log(`  Margem por trade: ${marginToUse}`);
-        console.log(`  Alavancagem: ${leverage}`);
-        console.log(`  Tamanho posição (USD): ${positionSizeInUsd}`);
-        console.log(`  Quantidade: ${quantity}`);
-        console.log(colors.reset);
-            await openPosition(symbol, signal);
-        } else {
-        console.log(colors.yellow, `[DECISÃO FINAL] Nenhuma oportunidade com confluência encontrada.`, colors.reset);
-    }
+            }
+        }
+    }
 }
 
 async function manageOpenPosition(symbol) {
-    const symbolState = websocketService.getBotState()[symbol];
-    const { entryPrice, side, activeStrategyConfig, activeStrategy } = symbolState.position;
-    const { takeProfitPercent, stopLossPercent, useInvalidationExit } = activeStrategyConfig;
-    const { takerFeePercent } = STRATEGY_CONFIG;
-    const price = symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
-    let closeReason = null;
+    const symbolState = websocketService.getBotState()[symbol];
+    const { entryPrice, side, activeStrategyConfig, activeStrategy } = symbolState.position;
+    const { takeProfitPercent, stopLossPercent, useInvalidationExit } = activeStrategyConfig;
+    const { takerFeePercent } = STRATEGY_CONFIG;
+    const price = symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+    let closeReason = null;
 
-    // 1. Checagem de Stop-Loss e Take-Profit fixos
-    const adjustedTakeProfitPercent = takeProfitPercent + (takerFeePercent * 2);
-    const slLong = entryPrice * (1 - stopLossPercent / 100);
-    const tpLong = entryPrice * (1 + adjustedTakeProfitPercent / 100);
-    const slShort = entryPrice * (1 + stopLossPercent / 100);
-    const tpShort = entryPrice * (1 - adjustedTakeProfitPercent / 100);
+    // 1. Checagem de Stop-Loss e Take-Profit fixos
+    const adjustedTakeProfitPercent = takeProfitPercent + (takerFeePercent * 2);
+    const slLong = entryPrice * (1 - stopLossPercent / 100);
+    const tpLong = entryPrice * (1 + adjustedTakeProfitPercent / 100);
+    const slShort = entryPrice * (1 + stopLossPercent / 100);
+    const tpShort = entryPrice * (1 - adjustedTakeProfitPercent / 100);
 
-    if (side === 'LONG' && (price <= slLong || price >= tpLong)) {
-        closeReason = price <= slLong ? 'STOP-LOSS' : 'TAKE-PROFIT';
-    } else if (side === 'SHORT' && (price >= slShort || price <= tpShort)) {
-        closeReason = price >= slShort ? 'STOP-LOSS' : 'TAKE-PROFIT';
-    }
+    if (side === 'LONG' && (price <= slLong || price >= tpLong)) {
+        closeReason = price <= slLong ? 'STOP-LOSS' : 'TAKE-PROFIT';
+    } else if (side === 'SHORT' && (price >= slShort || price <= tpShort)) {
+        closeReason = price >= slShort ? 'STOP-LOSS' : 'TAKE-PROFIT';
+    }
 
-    // 2. Invalidação impulsionada pela IA ou realização de lucro (se a IA abriu a posição)
-    if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {
-        const aiCloseSignal = await aiModule.predictExit(symbol, STRATEGY_CONFIG.timeframesToWatch[0], symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].candles, symbolState.position);
-        if (aiCloseSignal && aiCloseSignal.action === 'CLOSE') {
+    // 2. Invalidação impulsionada pela IA ou realização de lucro (se a IA abriu a posição)
+    if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {
+        const aiCloseSignal = await aiModule.predictExit(symbol, STRATEGY_CONFIG.timeframesToWatch[0], symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].candles, symbolState.position);
+        if (aiCloseSignal && aiCloseSignal.action === 'CLOSE') {
             console.log(colors.magenta, `  [${symbol}] 🤖 SINAL DE SAÍDA DA IA: ${aiCloseSignal.reason} (${aiCloseSignal.confidence.toFixed(2)}% de confiança)`);
-            closeReason = 'AI_EXIT_SIGNAL';
-        }
-    }
+            closeReason = 'AI_EXIT_SIGNAL';
+        }
+    }
 
-    // 3. Invalidação de Estratégia Tradicional
-    if (!closeReason && useInvalidationExit && activeStrategy !== 'AI_Prediction') {
-        let isSignalStillValid = true;
-        if (activeStrategy === 'TrendFollowing') {
-            const longTermTimeframe = STRATEGY_CONFIG.timeframesToWatch[STRATEGY_CONFIG.timeframesToWatch.length - 1];
-            const longTermEma = symbolState.data[longTermTimeframe].indicators.ema;
-            if ((side === 'LONG' && price < longTermEma) || (side === 'SHORT' && price > longTermEma)) {
-                isSignalStillValid = false;
-            }
-        } else if (activeStrategy === 'MeanReversion') {
-            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
-            const { bb } = symbolState.data[triggerTF].indicators;
-            if (bb && ((side === 'LONG' && price > bb.middle) || (side === 'SHORT' && price < bb.middle))) {
-                isSignalStillValid = false;
-            }
-        } else if (activeStrategy === 'Breakout') {
-            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
-            const { bb } = symbolState.data[triggerTF].indicators;
-            if (bb && ((side === 'LONG' && price < bb.middle) || (side === 'SHORT' && price > bb.middle))) {
-                isSignalStillValid = false;
-            }
-        }
+    // 3. Invalidação de Estratégia Tradicional
+    if (!closeReason && useInvalidationExit && activeStrategy !== 'AI_Prediction') {
+        let isSignalStillValid = true;
+        if (activeStrategy === 'TrendFollowing') {
+            const longTermTimeframe = STRATEGY_CONFIG.timeframesToWatch[STRATEGY_CONFIG.timeframesToWatch.length - 1];
+            const longTermEma = symbolState.data[longTermTimeframe].indicators.ema;
+            if ((side === 'LONG' && price < longTermEma) || (side === 'SHORT' && price > longTermEma)) {
+                isSignalStillValid = false;
+            }
+        } else if (activeStrategy === 'MeanReversion') {
+            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+            const { bb } = symbolState.data[triggerTF].indicators;
+            if (bb && ((side === 'LONG' && price > bb.middle) || (side === 'SHORT' && price < bb.middle))) {
+                isSignalStillValid = false;
+            }
+        } else if (activeStrategy === 'Breakout') {
+            const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+            const { bb } = symbolState.data[triggerTF].indicators;
+            if (bb && ((side === 'LONG' && price < bb.middle) || (side === 'SHORT' && price > bb.middle))) {
+                isSignalStillValid = false;
+            }
+        }
 
-        if (!isSignalStillValid) {
-            closeReason = 'INVALIDATION';
-        }
-    }
+        if (!isSignalStillValid) {
+            closeReason = 'INVALIDATION';
+        }
+    }
 
-    if (closeReason) {
-        console.log(colors.yellow, `\n[${symbol}] 🚨 SINAL PARA FECHAR POSIÇÃO ${side}! Motivo: ${closeReason}`);
-        await closePosition(symbol, closeReason);
-    } else {
+    if (closeReason) {
+        console.log(colors.yellow, `\n[${symbol}] 🚨 SINAL PARA FECHAR POSIÇÃO ${side}! Motivo: ${closeReason}`);
+        await closePosition(symbol, closeReason);
+    } else {
         console.log(`  [${symbol}] Posição ${side} aberta (${symbolState.position.activeStrategy}).`);
-    }
+    }
 }
 
 // =================================================================================================
@@ -296,69 +274,69 @@ async function manageOpenPosition(symbol) {
 // =================================================================================================
 
 function checkTrendFollowingStrategy(symbol, config) {
-    const symbolState = websocketService.getBotState()[symbol];
-    const timeframes = STRATEGY_CONFIG.timeframesToWatch;
-    const triggerTF = timeframes[0];
-    const confirmationTF = timeframes[timeframes.length - 1];
+    const symbolState = websocketService.getBotState()[symbol];
+    const timeframes = STRATEGY_CONFIG.timeframesToWatch;
+    const triggerTF = timeframes[0];
+    const confirmationTF = timeframes[timeframes.length - 1];
 
-    const triggerIndicators = symbolState.data[triggerTF].indicators;
-    const confirmationIndicators = symbolState.data[confirmationTF].indicators;
-    const price = symbolState.data[triggerTF].lastPrice;
+    const triggerIndicators = symbolState.data[triggerTF].indicators;
+    const confirmationIndicators = symbolState.data[confirmationTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
 
-    if (!triggerIndicators || !confirmationIndicators || triggerIndicators.rsi === null || confirmationIndicators.ema === null) return null;
+    if (!triggerIndicators || !confirmationIndicators || triggerIndicators.rsi === null || confirmationIndicators.ema === null) return null;
 
-    const longConfluence =
-        price > confirmationIndicators.ema &&
-        triggerIndicators.rsi < config.rsiOversold;
+    const longConfluence =
+        price > confirmationIndicators.ema &&
+        triggerIndicators.rsi < config.rsiOversold;
 
-    if (longConfluence) {
-        return { side: 'LONG', strategy: 'TrendFollowing', config };
-    }
+    if (longConfluence) {
+        return { side: 'LONG', strategy: 'TrendFollowing', config };
+    }
 
-    const shortConfluence =
-        price < confirmationIndicators.ema &&
-        triggerIndicators.rsi > config.rsiOverbought;
+    const shortConfluence =
+        price < confirmationIndicators.ema &&
+        triggerIndicators.rsi > config.rsiOverbought;
 
-    if (shortConfluence) {
-        return { side: 'SHORT', strategy: 'TrendFollowing', config };
-    }
+    if (shortConfluence) {
+        return { side: 'SHORT', strategy: 'TrendFollowing', config };
+    }
 
-    return null;
+    return null;
 }
 
 function checkMeanReversionStrategy(symbol, config) {
-    const symbolState = websocketService.getBotState()[symbol];
-    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
-    const { bb, rsi } = symbolState.data[triggerTF].indicators;
-    const price = symbolState.data[triggerTF].lastPrice;
+    const symbolState = websocketService.getBotState()[symbol];
+    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+    const { bb, rsi } = symbolState.data[triggerTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
 
-    if (!bb || !rsi || bb.lower === null || bb.upper === null || rsi === null) return null;
+    if (!bb || !rsi || bb.lower === null || bb.upper === null || rsi === null) return null;
 
-    if (price < bb.lower && rsi < config.rsiOversold) {
-        return { side: 'LONG', strategy: 'MeanReversion', config };
-    }
-    if (price > bb.upper && rsi > config.rsiOverbought) {
-        return { side: 'SHORT', strategy: 'MeanReversion', config };
-    }
-    return null;
+    if (price < bb.lower && rsi < config.rsiOversold) {
+        return { side: 'LONG', strategy: 'MeanReversion', config };
+    }
+    if (price > bb.upper && rsi > config.rsiOverbought) {
+        return { side: 'SHORT', strategy: 'MeanReversion', config };
+    }
+    return null;
 }
 
 function checkBreakoutStrategy(symbol, config) {
-    const symbolState = websocketService.getBotState()[symbol];
-    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
-    const { bb, smaVolume } = symbolState.data[triggerTF].indicators;
-    const price = symbolState.data[triggerTF].lastPrice;
-    const currentVolume = symbolState.data[triggerTF].candles[symbolState.data[triggerTF].candles.length - 1].volume;
+    const symbolState = websocketService.getBotState()[symbol];
+    const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+    const { bb, smaVolume } = symbolState.data[triggerTF].indicators;
+    const price = symbolState.data[triggerTF].lastPrice;
+    const currentVolume = symbolState.data[triggerTF].candles[symbolState.data[triggerTF].candles.length - 1].volume;
 
-    if (!bb || bb.upper === null || bb.lower === null || smaVolume === null || !currentVolume) return null;
+    if (!bb || bb.upper === null || bb.lower === null || smaVolume === null || !currentVolume) return null;
 
-    if (price > bb.upper && currentVolume > (smaVolume * config.minVolumeSpike)) {
-        return { side: 'LONG', strategy: 'Breakout', config };
-    }
-    if (price < bb.lower && currentVolume > (smaVolume * config.minVolumeSpike)) {
-        return { side: 'SHORT', strategy: 'Breakout', config };
-    }
-    return null;
+    if (price > bb.upper && currentVolume > (smaVolume * config.minVolumeSpike)) {
+        return { side: 'LONG', strategy: 'Breakout', config };
+    }
+    if (price < bb.lower && currentVolume > (smaVolume * config.minVolumeSpike)) {
+        return { side: 'SHORT', strategy: 'Breakout', config };
+    }
+    return null;
 }
 
 
@@ -366,75 +344,114 @@ function checkBreakoutStrategy(symbol, config) {
 // 4. FUNÇÕES DE ORDEM E AUXILIARES
 // =================================================================================================
 
+// Função utilitária para obter saldo USDT do User Data Stream
+function getUSDTBalanceFromUserData() {
+    if (userAccountInfo && userAccountInfo.B) {
+        const usdt = userAccountInfo.B.find(b => b.a === STRATEGY_CONFIG.quoteAsset);
+        if (usdt) return parseFloat(usdt.wb);
+    }
+    return null;
+}
+
 async function openPosition(symbol, signal) {
-    const { leverage, marginPercentPerTrade, quoteAsset } = STRATEGY_CONFIG;
-    const price = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+    const { leverage, marginPercentPerTrade, quoteAsset } = STRATEGY_CONFIG;
+    const price = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
 
-    try {
-        const accountInfo = await client.futuresAccountInfo();
-        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === quoteAsset)?.availableBalance || '0');
-        const marginToUse = usdtBalance * (marginPercentPerTrade / 100);
+    try {
+        // Usa saldo do WebSocket se disponível
+        let usdtBalance = getUSDTBalanceFromUserData();
+        if (usdtBalance === null) {
+            // Fallback para REST apenas se necessário
+            const accountInfo = await client.futuresAccountInfo();
+            usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === quoteAsset)?.availableBalance || '0');
+        }
+        const marginToUse = usdtBalance * (marginPercentPerTrade / 100);
 
-        if (marginToUse * leverage < 5.1) {
+        if (marginToUse * leverage < 5.1) {
             console.log(colors.yellow, `  [${symbol}] AVISO: Valor da posição (${(marginToUse * leverage).toFixed(2)} USDT) é muito baixo para operar (mínimo Binance: ~5 USDT).`);
-            return;
-        }
+            return;
+        }
 
-        const positionSizeInUsd = marginToUse * leverage;
-        const quantity = positionSizeInUsd / price;
-        const formattedQuantity = parseFloat(quantity).toFixed(exchangeRules[symbol].quantityPrecision);
+        const positionSizeInUsd = marginToUse * leverage;
+        const quantity = positionSizeInUsd / price;
+        const formattedQuantity = parseFloat(quantity).toFixed(exchangeRules[symbol].quantityPrecision);
 
-        const order = await client.futuresOrder({
-            symbol,
-            side: signal.side === 'LONG' ? 'BUY' : 'SELL',
-            type: 'MARKET',
-            quantity: formattedQuantity,
-        });
+        const order = await client.futuresOrder({
+            symbol,
+            side: signal.side === 'LONG' ? 'BUY' : 'SELL',
+            type: 'MARKET',
+            quantity: formattedQuantity,
+        });
 
-        const positionState = websocketService.getBotState()[symbol].position;
-        positionState.side = signal.side;
-        positionState.quantity = parseFloat(order.executedQty);
-        positionState.activeStrategy = signal.strategy;
-        positionState.activeStrategyConfig = signal.config;
+        const positionState = websocketService.getBotState()[symbol].position;
+        positionState.side = signal.side;
+        positionState.quantity = parseFloat(order.executedQty);
+        positionState.activeStrategy = signal.strategy;
+        positionState.activeStrategyConfig = signal.config;
 
-        const trades = await client.futuresUserTrades({ symbol, orderId: order.orderId });
-        if (trades && trades.length > 0) {
-            positionState.entryFee = parseFloat(trades[0].commission);
-            positionState.entryPrice = parseFloat(trades[0].price);
-        } else {
-            console.log(colors.yellow, `  [${symbol}] Aviso: Detalhes do trade não disponíveis imediatamente. Usando preço e taxa estimados.`);
-            positionState.entryFee = (parseFloat(order.executedQty) * price * STRATEGY_CONFIG.takerFeePercent) / 100;
-            positionState.entryPrice = price;
-        }
+        // Usa dados do User Data Stream para trade/execução
+        let tradeInfo = null;
+        if (userOrders[symbol]) {
+            tradeInfo = userOrders[symbol];
+        }
+        if (tradeInfo) {
+            positionState.entryFee = parseFloat(tradeInfo.n || 0); // comissão
+            positionState.entryPrice = parseFloat(tradeInfo.ap || price); // preço médio
+        } else {
+            // Fallback para REST apenas se necessário
+            const trades = await client.futuresUserTrades({ symbol, orderId: order.orderId });
+            if (trades && trades.length > 0) {
+                positionState.entryFee = parseFloat(trades[0].commission);
+                positionState.entryPrice = parseFloat(trades[0].price);
+            } else {
+                positionState.entryFee = (parseFloat(order.executedQty) * price * STRATEGY_CONFIG.takerFeePercent) / 100;
+                positionState.entryPrice = price;
+            }
+        }
 
         console.log(colors.green, `  [${symbol}] POSIÇÃO ABERTA: ${positionState.side} ${positionState.quantity} @ ${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} (${positionState.activeStrategy})`);
-    } catch (error) { handleApiError(error); }
+    } catch (error) { handleApiError(error); }
 }
 
 async function closePosition(symbol, reason) {
-    const positionState = websocketService.getBotState()[symbol].position;
-    try {
-        const order = await client.futuresOrder({
-            symbol,
-            side: positionState.side === 'LONG' ? 'SELL' : 'BUY',
-            type: 'MARKET',
-            quantity: positionState.quantity.toString(),
-            reduceOnly: 'true',
-        });
+    const positionState = websocketService.getBotState()[symbol].position;
+    try {
+        const order = await client.futuresOrder({
+            symbol,
+            side: positionState.side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'MARKET',
+            quantity: positionState.quantity.toString(),
+            reduceOnly: 'true',
+        });
+
+        // Usa dados do User Data Stream para trade/execução de fechamento
+        let tradeInfo = null;
+        if (userOrders[symbol]) {
+            tradeInfo = userOrders[symbol];
+        }
+        if (tradeInfo) {
+            positionState.exitFee = parseFloat(tradeInfo.n || 0); // comissão
+            positionState.exitPrice = parseFloat(tradeInfo.ap || websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice);
+        } else {
+            // Fallback para REST apenas se necessário
+            // (Opcional: buscar trades de fechamento se necessário)
+            positionState.exitFee = 0;
+            positionState.exitPrice = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+        }
 
         console.log(colors.yellow, `[FECHAMENTO] [${symbol}] Parâmetros:`);
         console.log(`  Motivo: ${reason}`);
         console.log(`  Lado: ${positionState.side}`);
         console.log(`  Quantidade: ${positionState.quantity}`);
-        console.log(`  Preço de saída: ${websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice}`);
+        console.log(`  Preço de saída: ${positionState.exitPrice}`);
         console.log(`  Estratégia ativa: ${positionState.activeStrategy}`);
         console.log(colors.reset);
 
-        console.log(colors.yellow, `  [${symbol}] POSIÇÃO FECHADA: ${positionState.side} ${positionState.quantity} @ ${websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice.toFixed(exchangeRules[symbol].quantityPrecision)}. Motivo: ${reason}`);
+        console.log(colors.yellow, `  [${symbol}] POSIÇÃO FECHADA: ${positionState.side} ${positionState.quantity} @ ${positionState.exitPrice.toFixed(exchangeRules[symbol].quantityPrecision)}. Motivo: ${reason}`);
 
-        websocketService.getBotState()[symbol].position = { side: 'NONE' };
+        websocketService.getBotState()[symbol].position = { side: 'NONE' };
 
-    } catch (error) { handleApiError(error); }
+    } catch (error) { handleApiError(error); }
 }
 
 async function allFilesExist(symbols, timeframes) {
@@ -542,23 +559,78 @@ async function setLastUpdateTime() {
     }
 }
 
+// ================= USER DATA STREAM (WebSocket Privado) =====================
+let userDataStreamWS = null;
+let userDataListenKey = null;
+let userAccountInfo = null; // Saldo e posições em tempo real
+let userOrders = {}; // Status de ordens em tempo real
+
+async function startUserDataStream() {
+    // 1. Solicita listenKey
+    userDataListenKey = await client.futuresGetDataStream();
+    const listenKey = userDataListenKey.listenKey;
+    // 2. Abre WebSocket
+    const wsUrl = `wss://fstream.binance.com/ws/${listenKey}`;
+    userDataStreamWS = new (require('ws'))(wsUrl);
+    userDataStreamWS.on('open', () => {
+        console.log(colors.cyan, '[UserDataStream] WebSocket privado aberto!', colors.reset);
+    });
+    userDataStreamWS.on('message', (msg) => {
+        try {
+            const data = JSON.parse(msg);
+            if (data.e === 'ACCOUNT_UPDATE') {
+                // Atualização de saldo e posições
+                userAccountInfo = data.a;
+                // Exemplo: saldo USDT
+                const usdt = userAccountInfo.B.find(b => b.a === STRATEGY_CONFIG.quoteAsset);
+                if (usdt) {
+                    console.log(colors.green, `[UserDataStream] Saldo atualizado: ${usdt.wb} ${STRATEGY_CONFIG.quoteAsset}`, colors.reset);
+                }
+            } else if (data.e === 'ORDER_TRADE_UPDATE') {
+                // Atualização de ordens/trades
+                const order = data.o;
+                userOrders[order.s] = order;
+                console.log(colors.magenta, `[UserDataStream] Ordem/Trade: ${order.s} ${order.S} ${order.X} ${order.z} @ ${order.ap}`, colors.reset);
+            }
+        } catch (err) {
+            console.error(colors.red, '[UserDataStream] Erro ao processar mensagem:', err, colors.reset);
+        }
+    });
+    userDataStreamWS.on('error', (err) => {
+        console.error(colors.red, '[UserDataStream] Erro no WebSocket:', err.message, colors.reset);
+    });
+    userDataStreamWS.on('close', () => {
+        console.log(colors.yellow, '[UserDataStream] WebSocket fechado. Tentando reconectar...', colors.reset);
+        setTimeout(startUserDataStream, 10000);
+    });
+    // 3. Mantém listenKey vivo
+    setInterval(async () => {
+        if (userDataListenKey) {
+            await client.futuresKeepDataStream({ listenKey });
+        }
+    }, 30 * 60 * 1000); // 30 minutos
+}
+
 async function main() {
-    showHeader(`Bot MTA v5 - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
-    try {
+    showHeader(`Bot MTA v5 - [${STRATEGY_CONFIG.symbolsToWatch.join(', ')}]`);
+    try {
         // Inicializa o banco de dados
         console.log('🔌 Inicializando conexão com MongoDB...');
         await database.connect();
 
-        console.log('Buscando regras dos ativos...');
-        const exchangeInfo = await client.futuresExchangeInfo();
-        for (const rule of exchangeInfo.symbols) {
-            exchangeRules[rule.symbol] = { quantityPrecision: rule.quantityPrecision };
-        }
+        // Inicia o User Data Stream
+        await startUserDataStream();
 
-        console.log('Verificando saldo inicial...');
-        const accountInfo = await client.futuresAccountInfo();
-        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
-        console.log(colors.green, `✅ Saldo de margem disponível: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
+        console.log('Buscando regras dos ativos...');
+        const exchangeInfo = await client.futuresExchangeInfo();
+        for (const rule of exchangeInfo.symbols) {
+            exchangeRules[rule.symbol] = { quantityPrecision: rule.quantityPrecision };
+        }
+
+        console.log('Verificando saldo inicial...');
+        const accountInfo = await client.futuresAccountInfo();
+        const usdtBalance = parseFloat(accountInfo.assets.find(a => a.asset === STRATEGY_CONFIG.quoteAsset)?.availableBalance || '0');
+        console.log(colors.green, `✅ Saldo de margem disponível: ${usdtBalance.toFixed(2)} ${STRATEGY_CONFIG.quoteAsset}`);
         const MIN_INITIAL_BALANCE = 10;
         if (usdtBalance < MIN_INITIAL_BALANCE) {
             tradingMode = 'MANAGEMENT_ONLY';
@@ -673,8 +745,8 @@ async function main() {
         }
 
         // Inicializa o módulo de IA
-        console.log('Iniciando módulo de IA...');
-        await aiModule.init();
+        console.log('Iniciando módulo de IA...');
+        await aiModule.init();
 
         // Carrega dados históricos processados para IA
         for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
@@ -730,38 +802,38 @@ async function main() {
             console.log(colors.green, '[IA] Dados e modelo já atualizados. Não será feito novo treinamento.', colors.reset);
         }
 
-        // Inicia o serviço de WebSockets para dados em tempo real
-        console.log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
-        botState = await websocketService.initialize(client, botState, onNewCandleProcessed);
+        // Inicia o serviço de WebSockets para dados em tempo real
+        console.log('\nIniciando serviço de WebSockets e monitoramento em tempo real...');
+        botState = await websocketService.initialize(client, botState, onNewCandleProcessed);
 
-        console.log(colors.yellow, "\nO bot está operando. Pressione CTRL + C para parar.", colors.reset);
-        console.log(colors.yellow, "A IA começará a treinar periodicamente com os dados coletados.");
+        console.log(colors.yellow, "\nO bot está operando. Pressione CTRL + C para parar.", colors.reset);
+        console.log(colors.yellow, "A IA começará a treinar periodicamente com os dados coletados.");
 
-        if (STRATEGY_CONFIG.aiModule.enabled) {
-            setInterval(async () => {
-                const allTimeframesHaveSomeData = STRATEGY_CONFIG.symbolsToWatch.every(symbol =>
-                    STRATEGY_CONFIG.timeframesToWatch.every(tf =>
-                        aiModule.getCollectedDataCount(symbol, tf) >= aiModule.aiModel.minDataForTraining
-                    )
-                );
-                if (allTimeframesHaveSomeData) {
-                    console.log(colors.yellow, "\nIniciando treinamento da IA...");
-                    await aiModule.train();
-                    console.log(colors.yellow, "Treinamento da IA concluído.");
-                } else {
-                    console.log(colors.gray, "🤖 IA: Histórico insuficiente em um ou mais timeframes para iniciar o treinamento.", colors.reset);
-                }
-            }, STRATEGY_CONFIG.aiModule.trainingIntervalMs || 3600000);
-        } else {
-            console.log(colors.yellow, "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.", colors.reset);
-        }
+        if (STRATEGY_CONFIG.aiModule.enabled) {
+            setInterval(async () => {
+                const allTimeframesHaveSomeData = STRATEGY_CONFIG.symbolsToWatch.every(symbol =>
+                    STRATEGY_CONFIG.timeframesToWatch.every(tf =>
+                        aiModule.getCollectedDataCount(symbol, tf) >= aiModule.aiModel.minDataForTraining
+                    )
+                );
+                if (allTimeframesHaveSomeData) {
+                    console.log(colors.yellow, "\nIniciando treinamento da IA...");
+                    await aiModule.train();
+                    console.log(colors.yellow, "Treinamento da IA concluído.");
+                } else {
+                    console.log(colors.gray, "🤖 IA: Histórico insuficiente em um ou mais timeframes para iniciar o treinamento.", colors.reset);
+                }
+            }, STRATEGY_CONFIG.aiModule.trainingIntervalMs || 3600000);
+        } else {
+            console.log(colors.yellow, "Módulo de IA desabilitado na configuração. O treinamento automático não será iniciado.", colors.reset);
+        }
 
-    } catch (error) {
-        handleApiError(error);
-        process.exit(1);
+    } catch (error) {
+        handleApiError(error);
+        process.exit(1);
     } finally {
         await database.close();
-    }
+    }
 }
 
 function showHeader(title) { console.clear(); console.log(colors.cyan, `================== ${title} ==================\n`, colors.reset); }

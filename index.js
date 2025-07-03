@@ -425,6 +425,7 @@ async function openPosition(symbol, signal) {
         const formattedQuantity = parseFloat(quantity).toFixed(exchangeRules[symbol].quantityPrecision);
 
         // 1. Abre a posição a mercado
+        log('info', `[API] Enviando ordem de mercado para ${symbol}: side=${signal.side === 'LONG' ? 'BUY' : 'SELL'}, quantity=${formattedQuantity}`);
         const order = await client.futuresOrder({
             symbol,
             side: signal.side === 'LONG' ? 'BUY' : 'SELL',
@@ -433,6 +434,7 @@ async function openPosition(symbol, signal) {
         });
 
         log('debug', `[CORRETORA] Resposta da API ao abrir ordem de mercado para ${symbol}:`, order);
+        log('info', `[API] Resposta da corretora ao abrir ordem de mercado para ${symbol}: orderId=${order.orderId}, status=${order.status}, executedQty=${order.executedQty}, avgPrice=${order.avgPrice || order.avgFillPrice || order.price}`);
 
         const positionState = websocketService.getBotState()[symbol].position;
         positionState.side = signal.side;

@@ -32,80 +32,75 @@ const MIN_CANDLES_FOR_FULL_INDICATORS = Math.max(...Object.values(requiredCandle
  */
 async function initialize(binanceClient, initialBotState, onCandleReceived) {
     client = binanceClient;
-    botState = initialBotState; // Recebe o estado já pré-preenchido do bot.js
+    botState = initialBotState;
     candleCallbacks.onCandleReceived = onCandleReceived;
 
     console.log('\n[WebSocketService] Iniciando monitoramento de dados em tempo real via WebSockets...');
-    console.log(colors.yellow, `[WebSocketService] Estratégias e IA usarão histórico pré-carregado + dados em tempo real.
-    Mínimo de velas para indicadores: ${MIN_CANDLES_FOR_FULL_INDICATORS}.`, colors.reset);
+    console.log(colors.yellow, `[WebSocketService] Estratégias e IA usarão histórico pré-carregado + dados em tempo real.\n    Mínimo de velas para indicadores: ${MIN_CANDLES_FOR_FULL_INDICATORS}.`, colors.reset);
 
+    // Configuração de margem e alavancagem para cada símbolo (continua individual)
     for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-        console.log(`[WebSocketService] Configurando para ${symbol}...`);
-
-        // Certifica-se que a estrutura básica do símbolo e posição existem no botState
         if (!botState[symbol]) {
             botState[symbol] = { data: {}, position: { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null } };
         }
-        if (!botState[symbol].position) { // Garante que a posição foi inicializada
-             botState[symbol].position = { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null };
+        if (!botState[symbol].position) {
+            botState[symbol].position = { side: 'NONE', entryPrice: 0, quantity: 0, entryFee: 0, activeStrategy: null, activeStrategyConfig: null };
         }
-
-
         try {
-            // Configurações de margem e alavancagem para o par (ainda são requisições HTTP REST)
             try {
                 await client.futuresMarginType({ symbol, marginType: 'ISOLATED' });
             } catch (e) {
-                if (e.code !== -4046) console.log(colors.yellow, `  [${symbol}] Aviso: Erro ao definir margem ISOLADA: ${e.message}`);
-                else console.log(colors.yellow, `  [${symbol}] Aviso: Tipo de margem já é ISOLADA.`);
+                if (e.code !== -4046) console.log(colors.yellow, `  [${symbol}] Aviso: Erro ao definir margem ISOLADA: ${e.message}`);
+                else console.log(colors.yellow, `  [${symbol}] Aviso: Tipo de margem já é ISOLADA.`);
             }
             await client.futuresLeverage({ symbol, leverage: STRATEGY_CONFIG.leverage });
-            console.log(colors.cyan, `  [${symbol}] Alavancagem: ${STRATEGY_CONFIG.leverage}x | Margem: ISOLADA.`);
-
-            for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
-                try {
-                    // Verifica se este timeframe já foi pré-aquecido via HTTP
-                    // Se não, inicializa vazio. Se sim, já tem os dados.
-                    if (!botState[symbol].data[timeframe]) {
-                         botState[symbol].data[timeframe] = { candles: [], indicators: {}, lastPrice: 0, isReady: false };
-                    }
-                    // A flag `isReady` (se existir) dirá se já está pronto via HTTP
-                    let isTimeframeAlreadyReady = botState[symbol].data[timeframe].isReady || false;
-
-                    // Loga o estado inicial de prontidão
-                    if (isTimeframeAlreadyReady) {
-                         console.log(colors.green, `  [${symbol}] [${timeframe}] já está PRÉ-AQUECIDO com ${botState[symbol].data[timeframe].candles.length} velas.`);
-                    } else {
-                         console.log(colors.yellow, `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`, colors.reset);
-                    }
-
-                    console.log(`  [${symbol}] Abrindo WebSocket para [${timeframe}]...`);
-
-                    client.ws.futuresCandles(symbol, timeframe, (candle) => {
-                        handleRealtimeCandle(symbol, timeframe, candle, isTimeframeAlreadyReady);
-                    });
-
-                    console.log(colors.green, `  [${symbol}] Monitoramento de stream em [${timeframe}] iniciado.`);
-
-                    await new Promise(resolve => setTimeout(resolve, 500));
-
-                } catch (tfError) {
-                    console.error(colors.red, `  [${symbol}] FALHA ao configurar WebSocket para [${timeframe}]:`, `[${tfError.code || 'S/C'}] ${tfError.message}`, colors.reset);
-                    console.log(colors.yellow, `  [${symbol}] Pulando monitoramento para [${timeframe}].`, colors.reset);
-                    // Marca o timeframe como não pronto se o WS falhar, mesmo que o HTTP tenha funcionado
-                    if (botState[symbol].data[timeframe]) {
-                        botState[symbol].data[timeframe].isReady = false;
-                    }
-                }
-            }
+            console.log(colors.cyan, `  [${symbol}] Alavancagem: ${STRATEGY_CONFIG.leverage}x | Margem: ISOLADA.`);
         } catch (symbolError) {
-            console.error(colors.red, `  [${symbol}] FALHA GERAL ao configurar o par:`, `[${symbolError.code || 'S/C'}] ${symbolError.message}`, colors.reset);
-            console.log(colors.yellow, `  [${symbol}] Este par pode não ser totalmente monitorado.`, colors.reset);
+            console.error(colors.red, `  [${symbol}] FALHA GERAL ao configurar o par:`, `[${symbolError.code || 'S/C'}] ${symbolError.message}`, colors.reset);
+            console.log(colors.yellow, `  [${symbol}] Este par pode não ser totalmente monitorado.`, colors.reset);
         }
     }
-    return botState; // Retorna o estado atualizado
-}
 
+    // Monta lista de streams para todos os pares/timeframes
+    const streams = [];
+    for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
+        for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
+            if (!botState[symbol].data[timeframe]) {
+                botState[symbol].data[timeframe] = { candles: [], indicators: {}, lastPrice: 0, isReady: false };
+            }
+            let isTimeframeAlreadyReady = botState[symbol].data[timeframe].isReady || false;
+            if (isTimeframeAlreadyReady) {
+                console.log(colors.green, `  [${symbol}] [${timeframe}] já está PRÉ-AQUECIDO com ${botState[symbol].data[timeframe].candles.length} velas.`);
+            } else {
+                console.log(colors.yellow, `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`, colors.reset);
+            }
+            streams.push({ symbol, timeframe });
+        }
+    }
+
+    // Abre um único WebSocket multiplexado para todos os pares/timeframes
+    const streamNames = streams.map(s => `${s.symbol.toLowerCase()}@kline_${s.timeframe}`);
+    client.ws.customSubStream(streamNames, (data) => {
+        // data.s = symbol, data.k.i = timeframe, data.k = candle
+        const symbol = data.s;
+        const timeframe = data.k.i;
+        const candle = {
+            openTime: data.k.t,
+            closeTime: data.k.T,
+            open: data.k.o,
+            high: data.k.h,
+            low: data.k.l,
+            close: data.k.c,
+            volume: data.k.v,
+            isFinal: data.k.x
+        };
+        // Descobre se já estava pronto via HTTP
+        const isTimeframeAlreadyReady = botState[symbol] && botState[symbol].data[timeframe] && botState[symbol].data[timeframe].isReady;
+        handleRealtimeCandle(symbol, timeframe, candle, isTimeframeAlreadyReady);
+    });
+
+    return botState;
+}
 
 /**
  * Lida com uma vela recebida em tempo real, acumula-a, calcula indicadores
@@ -153,16 +148,15 @@ function handleRealtimeCandle(symbol, timeframe, candle, initialReady) {
     if (!symbolData.isReady) { // Só atualiza se ainda não estiver pronto
         symbolData.isReady = symbolData.candles.length >= MIN_CANDLES_FOR_FULL_INDICATORS;
         if (symbolData.isReady && !initialReady) { // Se acabou de ficar pronto via WS e não via HTTP
-            console.log(colors.green, `  [${symbol}] [${timeframe}] Histórico "aquecido" via WebSocket (${symbolData.candles.length} velas).`, colors.reset);
+            console.log(colors.green, `  [${symbol}] [${timeframe}] Histórico "aquecido" via WebSocket (${symbolData.candles.length} velas).`, colors.reset);
         }
     }
-
 
     // Notifica o bot principal APENAS se este timeframe estiver pronto para operar (isReady === true)
     if (symbolData.isReady && candleCallbacks.onCandleReceived) {
         candleCallbacks.onCandleReceived(symbol, timeframe, candle, symbolData.indicators);
     } else {
-        console.log(colors.gray, `  [${symbol}] [${timeframe}] Vela final recebida, mas histórico ainda não está PRONTO para operação (${symbolData.candles.length}/${MIN_CANDLES_FOR_FULL_INDICATORS} velas).`, colors.reset);
+        console.log(colors.gray, `  [${symbol}] [${timeframe}] Vela final recebida, mas histórico ainda não está PRONTO para operação (${symbolData.candles.length}/${MIN_CANDLES_FOR_FULL_INDICATORS} velas).`, colors.reset);
     }
 }
 

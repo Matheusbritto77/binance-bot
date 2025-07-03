@@ -217,6 +217,21 @@ async function getHistoricalData(symbol, timeframe) {
 }
 
 /**
+ * Busca dados históricos em lote para múltiplos símbolos/timeframes em paralelo.
+ * @param {Array<{symbol: string, timeframe: string}>} batchArray
+ * @returns {Promise<Array<{symbol: string, timeframe: string, data: Array<object>}>>}
+ */
+async function getHistoricalDataBatch(batchArray) {
+    const results = await Promise.all(
+        batchArray.map(async ({ symbol, timeframe }) => {
+            const data = await getHistoricalData(symbol, timeframe);
+            return { symbol, timeframe, data };
+        })
+    );
+    return results;
+}
+
+/**
  * Define o cliente Binance para este módulo. Deve ser chamado antes de usar getHistoricalData.
  * @param {object} clientInstance - O cliente Binance API.
  */
@@ -227,4 +242,5 @@ function setBinanceClient(clientInstance) {
 module.exports = {
     setBinanceClient,
     getHistoricalData,
+    getHistoricalDataBatch,
 };

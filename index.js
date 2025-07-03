@@ -693,14 +693,33 @@ async function main() {
             // Se precisa atualizar, faz a busca via HTTP, salva e treina IA
             console.log(colors.yellow, '[ATUALIZAÇÃO] Buscando dados históricos via HTTP para atualização...', colors.reset);
             dataHttp.setBinanceClient(client);
-        for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
-            for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
-                const historicalData = await dataHttp.getHistoricalData(symbol, timeframe);
-                if (historicalData) {
-                    aiModule.collectHistoricalDataFromHttp(symbol, timeframe, historicalData);
-                        await database.saveData('historical_data', historicalData, symbol, timeframe);
-                    }
+
+            // Monta array de tarefas para busca em lote
+            const batchArray = [];
+            for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
+                for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
+                    batchArray.push({ symbol, timeframe });
                 }
+            }
+
+            // Busca todos os dados em lote
+            const batchResults = await dataHttp.getHistoricalDataBatch(batchArray);
+
+            // Alimenta IA e prepara array para salvar em lote
+            const saveBatch = [];
+            for (const result of batchResults) {
+                if (result.data) {
+                    aiModule.collectHistoricalDataFromHttp(result.symbol, result.timeframe, result.data);
+                    saveBatch.push({
+                        collection: 'historical_data',
+                        data: result.data,
+                        symbol: result.symbol,
+                        timeframe: result.timeframe
+                    });
+                }
+            }
+            if (saveBatch.length > 0) {
+                await database.saveDataBatch(saveBatch);
             }
             await setLastUpdateTime();
             console.log(colors.green, '[ATUALIZAÇÃO] Dados históricos atualizados e data registrada.', colors.reset);

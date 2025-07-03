@@ -142,9 +142,61 @@ async function saveData(collection, data, symbol = null, timeframe = null, query
     }
 }
 
+/**
+ * Salva múltiplos documentos em lote no MongoDB (bulkWrite). Fallback para JSON se necessário.
+ * @param {Array<{collection: string, data: any, symbol?: string, timeframe?: string}>} batchArray
+ * @returns {Promise<boolean>} true se sucesso
+ */
+async function saveDataBatch(batchArray) {
+    if (db) {
+        try {
+            const operations = batchArray.map(item => {
+                let documentId;
+                if (item.symbol && item.timeframe) {
+                    documentId = `${item.collection}_${item.symbol}_${item.timeframe}`;
+                } else {
+                    documentId = item.collection;
+                }
+                return {
+                    updateOne: {
+                        filter: { _id: documentId },
+                        update: { $set: { data: item.data, updatedAt: new Date() } },
+                        upsert: true
+                    }
+                };
+            });
+            await db.collection('bot_data').bulkWrite(operations);
+            console.log(`📊 [MongoDB] Salvo em lote (${batchArray.length} documentos)`);
+            return true;
+        } catch (err) {
+            console.log('❌ Erro ao salvar em lote no MongoDB:', err.message);
+        }
+    }
+    // Fallback para JSON: salva cada item individualmente
+    if (!FORCE_MONGO_ONLY || !db) {
+        let allOk = true;
+        for (const item of batchArray) {
+            const file = getJsonFilePath(item.collection, item.symbol, item.timeframe);
+            try {
+                const dir = path.dirname(file);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(file, JSON.stringify(item.data, null, 2));
+                console.log(`📁 [JSON] Salvo em ${file}`);
+            } catch (err) {
+                console.log('❌ Erro ao salvar JSON:', err.message);
+                allOk = false;
+            }
+        }
+        return allOk;
+    } else {
+        console.log('🚫 [FORCE_MONGO_ONLY] Ignorando salvamento JSON em lote');
+        return false;
+    }
+}
+
 async function close() {
     if (client) await client.close();
     db = null;
 }
 
-module.exports = { connect, isConnected, loadData, saveData, close, FORCE_MONGO_ONLY }; 
+module.exports = { connect, isConnected, loadData, saveData, saveDataBatch, close, FORCE_MONGO_ONLY }; 

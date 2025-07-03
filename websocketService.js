@@ -5,6 +5,7 @@ const Binance = require('binance-api-node').default;
 const { RSI, EMA, SMA, BollingerBands } = require('technicalindicators');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws');
 
 const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m", gray: "\x1b[37m" };
@@ -21,6 +22,15 @@ const requiredCandlesForIndicators = {
     'smaVolume': STRATEGY_CONFIG.strategies.breakout?.volumeSmaPeriod || 20
 };
 const MIN_CANDLES_FOR_FULL_INDICATORS = Math.max(...Object.values(requiredCandlesForIndicators));
+
+// Utilitário para dividir array em chunks
+function chunkArray(array, size) {
+    const result = [];
+    for (let i = 0; i < array.length; i += size) {
+        result.push(array.slice(i, i + size));
+    }
+    return result;
+}
 
 /**
  * Inicializa o serviço de WebSockets e começa a coletar dados em tempo real.
@@ -74,29 +84,59 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
             } else {
                 console.log(colors.yellow, `  [${symbol}] [${timeframe}] precisa ser "aquecido" via WebSocket.`, colors.reset);
             }
-            streams.push({ symbol, timeframe });
+            streams.push(`${symbol.toLowerCase()}@kline_${timeframe}`);
         }
     }
 
-    // Abre um único WebSocket multiplexado para todos os pares/timeframes
-    const streamNames = streams.map(s => `${s.symbol.toLowerCase()}@kline_${s.timeframe}`);
-    client.ws.customSubStream(streamNames, (data) => {
-        // data.s = symbol, data.k.i = timeframe, data.k = candle
-        const symbol = data.s;
-        const timeframe = data.k.i;
-        const candle = {
-            openTime: data.k.t,
-            closeTime: data.k.T,
-            open: data.k.o,
-            high: data.k.h,
-            low: data.k.l,
-            close: data.k.c,
-            volume: data.k.v,
-            isFinal: data.k.x
-        };
-        // Descobre se já estava pronto via HTTP
-        const isTimeframeAlreadyReady = botState[symbol] && botState[symbol].data[timeframe] && botState[symbol].data[timeframe].isReady;
-        handleRealtimeCandle(symbol, timeframe, candle, isTimeframeAlreadyReady);
+    // Divide os streams em grupos de até 900
+    const streamChunks = chunkArray(streams, 900);
+    const wsConnections = [];
+
+    streamChunks.forEach((chunk, idx) => {
+        const wsUrl = `wss://fstream.binance.com/stream?streams=${chunk.join('/')}`;
+        let reconnectAttempts = 0;
+        function connectWS() {
+            const ws = new WebSocket(wsUrl);
+            wsConnections.push(ws);
+            ws.on('open', () => {
+                reconnectAttempts = 0;
+                console.log(colors.cyan, `[WebSocketService] WebSocket #${idx + 1} aberto com ${chunk.length} streams.`, colors.reset);
+            });
+            ws.on('message', (msg) => {
+                try {
+                    const data = JSON.parse(msg);
+                    if (data && data.data && data.data.s && data.data.k) {
+                        const symbol = data.data.s;
+                        const timeframe = data.data.k.i;
+                        const candle = {
+                            openTime: data.data.k.t,
+                            closeTime: data.data.k.T,
+                            open: data.data.k.o,
+                            high: data.data.k.h,
+                            low: data.data.k.l,
+                            close: data.data.k.c,
+                            volume: data.data.k.v,
+                            isFinal: data.data.k.x
+                        };
+                        const isTimeframeAlreadyReady = botState[symbol] && botState[symbol].data[timeframe] && botState[symbol].data[timeframe].isReady;
+                        handleRealtimeCandle(symbol, timeframe, candle, isTimeframeAlreadyReady);
+                    }
+                } catch (err) {
+                    console.error(colors.red, '[WebSocketService] Erro ao processar mensagem WS:', err, colors.reset);
+                }
+            });
+            ws.on('error', (err) => {
+                console.error(colors.red, `[WebSocketService] Erro no WebSocket #${idx + 1}:`, err.message, colors.reset);
+            });
+            ws.on('close', () => {
+                console.log(colors.yellow, `[WebSocketService] WebSocket #${idx + 1} fechado. Tentando reconectar...`, colors.reset);
+                setTimeout(() => {
+                    reconnectAttempts++;
+                    connectWS();
+                }, Math.min(30000, 1000 * Math.pow(2, reconnectAttempts))); // backoff exponencial até 30s
+            });
+        }
+        connectWS();
     });
 
     return botState;

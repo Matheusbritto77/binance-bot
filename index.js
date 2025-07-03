@@ -53,7 +53,7 @@ async function onNewCandleProcessed(symbol, timeframe, candle, indicators) {
 }
 
 
-async function runMasterStrategy(symbol, timeframe) {
+async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manageOpenPosition) {
     const symbolState = websocketService.getBotState()[symbol];
 
     if (!symbolState?.data[timeframe]?.candles || symbolState.data[timeframe].candles.length < websocketService.MIN_CANDLES_FOR_FULL_INDICATORS) {
@@ -77,7 +77,7 @@ async function runMasterStrategy(symbol, timeframe) {
 
     // Always manage open positions, regardless of trading mode
     if (symbolState.position.side !== 'NONE') {
-        await manageOpenPosition(symbol);
+        await manageOpenPositionFn(symbol, timeframe);
         return; // If there's an open position, just manage it and return
     }
 
@@ -203,28 +203,73 @@ async function runMasterStrategy(symbol, timeframe) {
     }
 }
 
-async function manageOpenPosition(symbol) {
+async function manageOpenPosition(symbol, timeframe) {
     const symbolState = websocketService.getBotState()[symbol];
-    const { entryPrice, side, activeStrategyConfig, activeStrategy } = symbolState.position;
-    const { takeProfitPercent, stopLossPercent, useInvalidationExit } = activeStrategyConfig;
+    const { entryPrice, side, activeStrategyConfig, activeStrategy, openTime, maxDurationMs, trailingActive } = symbolState.position;
+    const { takeProfitPercent, stopLossPercent, useInvalidationExit, trailingStopPercent = 0.5 } = activeStrategyConfig;
     const { takerFeePercent } = STRATEGY_CONFIG;
     const price = symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
     let closeReason = null;
+    const now = Date.now();
 
-    // 1. Checagem de Stop-Loss e Take-Profit fixos
-    const adjustedTakeProfitPercent = takeProfitPercent + (takerFeePercent * 2);
-    const slLong = entryPrice * (1 - stopLossPercent / 100);
-    const tpLong = entryPrice * (1 + adjustedTakeProfitPercent / 100);
-    const slShort = entryPrice * (1 + stopLossPercent / 100);
-    const tpShort = entryPrice * (1 - adjustedTakeProfitPercent / 100);
-
-    if (side === 'LONG' && (price <= slLong || price >= tpLong)) {
-        closeReason = price <= slLong ? 'STOP-LOSS' : 'TAKE-PROFIT';
-    } else if (side === 'SHORT' && (price >= slShort || price <= tpShort)) {
-        closeReason = price >= slShort ? 'STOP-LOSS' : 'TAKE-PROFIT';
+    // 1. Trailing Stop baseado em indicador da estratégia
+    let trailingIndicatorValue = null;
+    if (activeStrategy === 'TrendFollowing') {
+        // Usa EMA do timeframe de confirmação
+        const confirmationTF = STRATEGY_CONFIG.timeframesToWatch[STRATEGY_CONFIG.timeframesToWatch.length - 1];
+        trailingIndicatorValue = symbolState.data[confirmationTF].indicators.ema;
+    } else if (activeStrategy === 'MeanReversion') {
+        // Usa BB middle do timeframe de entrada
+        const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+        trailingIndicatorValue = symbolState.data[triggerTF].indicators.bb?.middle;
+    } else if (activeStrategy === 'Breakout') {
+        // Usa BB oposta ao lado da operação
+        const triggerTF = STRATEGY_CONFIG.timeframesToWatch[0];
+        const bb = symbolState.data[triggerTF].indicators.bb;
+        if (side === 'LONG') trailingIndicatorValue = bb?.lower;
+        else if (side === 'SHORT') trailingIndicatorValue = bb?.upper;
     }
 
-    // 2. Invalidação impulsionada pela IA ou realização de lucro (se a IA abriu a posição)
+    if (trailingIndicatorValue && !isNaN(trailingIndicatorValue)) {
+        if (!symbolState.position.trailingActive) {
+            symbolState.position.trailingActive = true;
+            symbolState.position.trailingStopPrice = trailingIndicatorValue;
+            console.log(colors.cyan, `[${symbol}] Trailing stop ativado! Novo stop (indicador): ${trailingIndicatorValue.toFixed(4)}`);
+        } else {
+            // Só move o trailing se for mais favorável
+            if ((side === 'LONG' && trailingIndicatorValue > symbolState.position.trailingStopPrice) ||
+                (side === 'SHORT' && trailingIndicatorValue < symbolState.position.trailingStopPrice)) {
+                symbolState.position.trailingStopPrice = trailingIndicatorValue;
+                console.log(colors.cyan, `[${symbol}] Trailing stop movido para: ${trailingIndicatorValue.toFixed(4)}`);
+            }
+        }
+        // Se o preço atingir o trailing, fecha a posição
+        if ((side === 'LONG' && price <= symbolState.position.trailingStopPrice) ||
+            (side === 'SHORT' && price >= symbolState.position.trailingStopPrice)) {
+            closeReason = 'TRAILING_STOP_HIT';
+        }
+    }
+
+    // 2. Fechamento automático ao atingir o tempo máximo
+    if (openTime && maxDurationMs && now - openTime >= maxDurationMs) {
+        closeReason = 'MAX_DURATION_REACHED';
+        console.log(colors.yellow, `[${symbol}] Tempo máximo da operação atingido (${maxDurationMs / 60000} min). Fechando posição.`);
+    }
+
+    // 3. Decisão baseada em indicadores ao final do tempo
+    if (!closeReason && openTime && maxDurationMs && now - openTime >= maxDurationMs * 0.95) {
+        // Se está perto do tempo limite, use indicadores para decidir
+        const indicators = symbolState.data[timeframe].indicators;
+        // Exemplo: se RSI está sobrecomprado em LONG, fecha
+        if (side === 'LONG' && indicators.rsi > 70) {
+            closeReason = 'RSI_OVERBOUGHT_CLOSE';
+        } else if (side === 'SHORT' && indicators.rsi < 30) {
+            closeReason = 'RSI_OVERSOLD_CLOSE';
+        }
+        // (Adicione outras regras de indicadores conforme desejar)
+    }
+
+    // 4. Invalidação impulsionada pela IA ou realização de lucro (se a IA abriu a posição)
     if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {
         const aiCloseSignal = await aiModule.predictExit(symbol, STRATEGY_CONFIG.timeframesToWatch[0], symbolState.data[STRATEGY_CONFIG.timeframesToWatch[0]].candles, symbolState.position);
         if (aiCloseSignal && aiCloseSignal.action === 'CLOSE') {
@@ -233,7 +278,7 @@ async function manageOpenPosition(symbol) {
         }
     }
 
-    // 3. Invalidação de Estratégia Tradicional
+    // 5. Invalidação de Estratégia Tradicional
     if (!closeReason && useInvalidationExit && activeStrategy !== 'AI_Prediction') {
         let isSignalStillValid = true;
         if (activeStrategy === 'TrendFollowing') {
@@ -356,6 +401,8 @@ function getUSDTBalanceFromUserData() {
 async function openPosition(symbol, signal) {
     const { leverage, marginPercentPerTrade, quoteAsset } = STRATEGY_CONFIG;
     const price = websocketService.getBotState()[symbol].data[STRATEGY_CONFIG.timeframesToWatch[0]].lastPrice;
+    const strategyConfig = signal.config;
+    const maxDurationMs = (strategyConfig.maxOperationDurationMinutes || 60) * 60 * 1000;
 
     try {
         // Usa saldo do WebSocket se disponível
@@ -376,6 +423,7 @@ async function openPosition(symbol, signal) {
         const quantity = positionSizeInUsd / price;
         const formattedQuantity = parseFloat(quantity).toFixed(exchangeRules[symbol].quantityPrecision);
 
+        // 1. Abre a posição a mercado
         const order = await client.futuresOrder({
             symbol,
             side: signal.side === 'LONG' ? 'BUY' : 'SELL',
@@ -388,6 +436,41 @@ async function openPosition(symbol, signal) {
         positionState.quantity = parseFloat(order.executedQty);
         positionState.activeStrategy = signal.strategy;
         positionState.activeStrategyConfig = signal.config;
+        positionState.openTime = Date.now();
+        positionState.maxDurationMs = maxDurationMs;
+
+        // 2. Calcula preços de stop loss e take profit
+        const stopLossPercent = strategyConfig.stopLossPercent;
+        const takeProfitPercent = strategyConfig.takeProfitPercent;
+        let stopPrice, takePrice;
+        if (signal.side === 'LONG') {
+            stopPrice = price * (1 - stopLossPercent / 100);
+            takePrice = price * (1 + takeProfitPercent / 100);
+        } else {
+            stopPrice = price * (1 + stopLossPercent / 100);
+            takePrice = price * (1 - takeProfitPercent / 100);
+        }
+        stopPrice = stopPrice.toFixed(exchangeRules[symbol].quantityPrecision);
+        takePrice = takePrice.toFixed(exchangeRules[symbol].quantityPrecision);
+
+        // 3. Envia ordens de stop loss e take profit (ordens separadas)
+        const stopOrder = await client.futuresOrder({
+            symbol,
+            side: signal.side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'STOP_MARKET',
+            stopPrice: stopPrice,
+            closePosition: 'true',
+        });
+        const takeOrder = await client.futuresOrder({
+            symbol,
+            side: signal.side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'TAKE_PROFIT_MARKET',
+            stopPrice: takePrice,
+            closePosition: 'true',
+        });
+        positionState.stopOrderId = stopOrder.orderId;
+        positionState.takeOrderId = takeOrder.orderId;
+        positionState.trailingActive = false;
 
         // Usa dados do User Data Stream para trade/execução
         let tradeInfo = null;
@@ -410,6 +493,7 @@ async function openPosition(symbol, signal) {
         }
 
         console.log(colors.green, `  [${symbol}] POSIÇÃO ABERTA: ${positionState.side} ${positionState.quantity} @ ${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} (${positionState.activeStrategy})`);
+        console.log(colors.green, `  [${symbol}] STOP LOSS: ${stopPrice} | TAKE PROFIT: ${takePrice}`);
     } catch (error) { handleApiError(error); }
 }
 
@@ -854,4 +938,14 @@ function handleApiError(error) {
 function gracefulShutdown() { console.log(colors.yellow, "\nEncerrando bot..."); process.exit(0); }
 
 process.on('SIGINT', gracefulShutdown);
-main();
+
+// No final do arquivo, exporte a função para testes
+module.exports = {
+  runMasterStrategy,
+  manageOpenPosition
+};
+
+// Só execute main() se o arquivo for chamado diretamente
+if (require.main === module) {
+  main();
+}

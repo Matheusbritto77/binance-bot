@@ -199,6 +199,11 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
         }
     }
 
+    if (signal) {
+      log('info', `[BOT] Chamando openPosition para ${symbol} com sinal: ${JSON.stringify(signal)}`);
+      await openPosition(symbol, signal);
+    }
+
     if (!signal) {
       log('warning', `[DECISÃO] Nenhum sinal aceito para ${symbol} no timeframe ${timeframe}.`);
     }

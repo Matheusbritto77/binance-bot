@@ -236,17 +236,24 @@ async function manageOpenPosition(symbol, timeframe) {
         else if (side === 'SHORT') trailingIndicatorValue = bb?.upper;
     }
 
+    // 1. Ativação do trailing stop
+    if (trailingIndicatorValue && !isNaN(trailingIndicatorValue) && !symbolState.position.trailingActive) {
+        log('info', `[TRAILING] [${symbol}] Ativado! Novo stop (indicador): ${trailingIndicatorValue.toFixed(6)} | Estratégia: ${activeStrategy} | Indicador: ${trailingIndicatorValue}`);
+    }
+    // 2. Movimentação do trailing stop
+    if (trailingIndicatorValue && !isNaN(trailingIndicatorValue) && symbolState.position.trailingActive && ((side === 'LONG' && trailingIndicatorValue > symbolState.position.trailingStopPrice) || (side === 'SHORT' && trailingIndicatorValue < symbolState.position.trailingStopPrice))) {
+        log('info', `[TRAILING] [${symbol}] Movido! Novo stop: ${trailingIndicatorValue.toFixed(6)} | Estratégia: ${activeStrategy} | Indicador: ${trailingIndicatorValue}`);
+    }
+
     if (trailingIndicatorValue && !isNaN(trailingIndicatorValue)) {
         if (!symbolState.position.trailingActive) {
             symbolState.position.trailingActive = true;
             symbolState.position.trailingStopPrice = trailingIndicatorValue;
-            log('info', `[${symbol}] Trailing stop ativado! Novo stop (indicador): ${trailingIndicatorValue.toFixed(4)}`);
         } else {
             // Só move o trailing se for mais favorável
             if ((side === 'LONG' && trailingIndicatorValue > symbolState.position.trailingStopPrice) ||
                 (side === 'SHORT' && trailingIndicatorValue < symbolState.position.trailingStopPrice)) {
                 symbolState.position.trailingStopPrice = trailingIndicatorValue;
-                log('info', `[${symbol}] Trailing stop movido para: ${trailingIndicatorValue.toFixed(4)}`);
             }
         }
         // Se o preço atingir o trailing, fecha a posição
@@ -256,24 +263,26 @@ async function manageOpenPosition(symbol, timeframe) {
         }
     }
 
+    // 3. Fechamento por trailing
+    if (closeReason === 'TRAILING_STOP_HIT') {
+        log('warning', `[FECHAMENTO] [${symbol}] Fechando por trailing stop! Preço atual: ${price} | Trailing: ${symbolState.position.trailingStopPrice} | Estratégia: ${activeStrategy}`);
+    }
+
     // 2. Fechamento automático ao atingir o tempo máximo
     if (openTime && maxDurationMs && now - openTime >= maxDurationMs) {
         closeReason = 'MAX_DURATION_REACHED';
-        log('warning', `[${symbol}] Tempo máximo da operação atingido (${maxDurationMs / 60000} min). Fechando posição.`);
+        log('warning', `[FECHAMENTO] [${symbol}] Fechando por tempo máximo! Tempo: ${((now-openTime)/60000).toFixed(2)}min | Estratégia: ${activeStrategy}`);
     }
 
-    // 3. Decisão baseada em indicadores ao final do tempo
-    if (!closeReason && openTime && maxDurationMs && now - openTime >= maxDurationMs * 0.95) {
-        // Se está perto do tempo limite, use indicadores para decidir
-        const indicators = symbolState.data[timeframe].indicators;
-        // Exemplo: se RSI está sobrecomprado em LONG, fecha
-        if (side === 'LONG' && indicators.rsi > 70) {
-            closeReason = 'RSI_OVERBOUGHT_CLOSE';
-        } else if (side === 'SHORT' && indicators.rsi < 30) {
-            closeReason = 'RSI_OVERSOLD_CLOSE';
-        }
-        // (Adicione outras regras de indicadores conforme desejar)
-    }
+    // 5. Fechamento por decisão da IA
+    if (closeReason === 'AI_EXIT_SIGNAL') {
+        log('warning', `[FECHAMENTO] [${symbol}] Fechando por decisão da IA! Estratégia: ${activeStrategy}`);
+    }
+
+    // 6. Fechamento por indicador (outros motivos)
+    if (closeReason && !['TRAILING_STOP_HIT','MAX_DURATION_REACHED','AI_EXIT_SIGNAL'].includes(closeReason)) {
+        log('warning', `[FECHAMENTO] [${symbol}] Fechando por indicador: ${closeReason} | Estratégia: ${activeStrategy}`);
+    }
 
     // 4. Invalidação impulsionada pela IA ou realização de lucro (se a IA abriu a posição)
     if (!closeReason && activeStrategy === 'AI_Prediction' && useInvalidationExit && STRATEGY_CONFIG.aiModule.enabled && aiModule.isReadyForTrading()) {

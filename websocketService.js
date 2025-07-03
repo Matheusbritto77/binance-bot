@@ -72,9 +72,20 @@ async function initialize(binanceClient, initialBotState, onCandleReceived) {
         }
     }
 
+    // Antes de montar a lista de streams, filtrar os símbolos se estiver em modo MANAGEMENT_ONLY
+    const onlyManagement = typeof global !== 'undefined' && global.tradingMode === 'MANAGEMENT_ONLY';
+    let symbolsToSubscribe = STRATEGY_CONFIG.symbolsToWatch;
+    if (onlyManagement) {
+      const botState = initialBotState || {};
+      symbolsToSubscribe = symbolsToSubscribe.filter(symbol => {
+        const pos = botState[symbol]?.position;
+        return pos && pos.side && pos.side !== 'NONE';
+      });
+      log('info', `[WEBSOCKET] Modo MANAGEMENT_ONLY: assinando apenas ativos com posição aberta: ${symbolsToSubscribe.join(', ')}`);
+    }
     // Monta lista de streams para todos os pares/timeframes
     const streams = [];
-    for (const symbol of STRATEGY_CONFIG.symbolsToWatch) {
+    for (const symbol of symbolsToSubscribe) {
             for (const timeframe of STRATEGY_CONFIG.timeframesToWatch) {
                     if (!botState[symbol].data[timeframe]) {
                          botState[symbol].data[timeframe] = { candles: [], indicators: {}, lastPrice: 0, isReady: false };

@@ -198,6 +198,10 @@ async function runMasterStrategy(symbol, timeframe, manageOpenPositionFn = manag
             }
         }
     }
+
+    if (!signal) {
+      log('warning', `[DECISÃO] Nenhum sinal aceito para ${symbol} no timeframe ${timeframe}.`);
+    }
 }
 
 async function manageOpenPosition(symbol, timeframe) {
@@ -428,6 +432,8 @@ async function openPosition(symbol, signal) {
             quantity: formattedQuantity,
         });
 
+        log('debug', `[CORRETORA] Resposta da API ao abrir ordem de mercado para ${symbol}:`, order);
+
         const positionState = websocketService.getBotState()[symbol].position;
         positionState.side = signal.side;
         positionState.quantity = parseFloat(order.executedQty);
@@ -491,6 +497,7 @@ async function openPosition(symbol, signal) {
 
         log('success', `[OP] [${symbol}] ${positionState.side} Q:${positionState.quantity} @${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | SL:${stopPrice} TP:${takePrice} | Estrat:${positionState.activeStrategy} | Fee:${positionState.entryFee} | Ordem:${order.orderId} SL_ID:${positionState.stopOrderId} TP_ID:${positionState.takeOrderId}`);
         console.log(colors.green, `  [${symbol}] STOP LOSS: ${stopPrice} | TAKE PROFIT: ${takePrice}`);
+        log('success', `[ENTRADA] Operação aberta com sucesso para ${symbol}: ${positionState.side} Q:${positionState.quantity} @${positionState.entryPrice.toFixed(exchangeRules[symbol].quantityPrecision)} | SL:${stopPrice} TP:${takePrice} | Estrat:${positionState.activeStrategy}`);
     } catch (error) { handleApiError(error); }
 }
 

@@ -14,8 +14,8 @@ const dataHttp = require('./dataHttp'); // NOVO: Importa o módulo para dados hi
 const database = require('./database');
 
 // --- ATENÇÃO: DADOS DE AUTENTICAÇÃO ---
-const apiKey = '';
-const apiSecret = '';
+const apiKey = process.env.BINANCE_API_KEY || '';
+const apiSecret = process.env.BINANCE_API_SECRET || '';
 
 const STRATEGY_CONFIG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const colors = { reset: "\x1b[0m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", magenta: "\x1b[35m", gray: "\x1b[37m" };
